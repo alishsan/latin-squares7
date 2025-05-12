@@ -1,5 +1,5 @@
-(ns latin-square7.core
-  (:use functions))
+(ns latin-square7.core)
+(use 'functions)
 
 (defn -main []
   (println "Starting Alice & Bob Game Simulation")
