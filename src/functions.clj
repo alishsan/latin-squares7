@@ -28,7 +28,18 @@
     (when (seq legal-moves)
       (rand-nth legal-moves))))
 
-;; 3. Fixed Game Simulation
+
+;; 3. Visualization (unchanged)
+(defn print-board [board]
+  (println "\n  0 1 2 3 4 5 6")
+  (doseq [row (range 7)]
+    (print row " ")
+    (doseq [col (range 7)]
+      (print (or (get-in board [row col]) ".") " "))
+    (println)))
+
+
+;; 4. Fixed Game Simulation
 (defn simulate-game []
   (loop [state {:board (empty-board) 
                 :player :alice
@@ -48,12 +59,3 @@
                   :last-number num}
                  (inc move-count)))
         (println (str (name (:player state)) " cannot move. Game over!"))))))
-
-;; 4. Visualization (unchanged)
-(defn print-board [board]
-  (println "\n  0 1 2 3 4 5 6")
-  (doseq [row (range 7)]
-    (print row " ")
-    (doseq [col (range 7)]
-      (print (or (get-in board [row col]) ".") " "))
-    (println)))
