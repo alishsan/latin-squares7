@@ -1,5 +1,5 @@
-(ns latin-squares.mcts
-  (:require [latin-squares.functions :as f]
+(ns latin-squares7.mcts
+  (:require [functions :as f]
             [clojure.set :as set]
             [clojure.string :as str]))
 
@@ -12,7 +12,7 @@
                          (merge-with + 
                                     {:wins 0 :visits 0} 
                                     existing 
-                                    stats)))
+                                    stats))))
 
 (defn node-stats [trie path]
   (get-in trie path {:wins 0 :visits 0}))
@@ -33,7 +33,7 @@
                            (apply max-key #(ucb1 trie % total-visits)))]
         (if (zero? (get-in trie [best-move :visits] 0))
           best-move
-          (select-node trie best-move (f/make-move game-state (last best-move)))))))
+          (select-node trie best-move (f/make-move game-state (last best-move))))))))
 
 (defn simulate [game-state]
   ;; Random simulation returns 1 if current player wins
