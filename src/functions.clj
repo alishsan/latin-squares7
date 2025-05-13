@@ -1,61 +1,63 @@
-(ns functions)
+(ns functions
+(:require [clojure.spec.alpha :as s]))
 
-;; 1. Core Game Logic (unchanged)
-(defn empty-board [] 
-  (vec (repeat 7 (vec (repeat 7 nil)))))
+(defn new-board [] 
+  (vec (repeat 7 (vec (repeat 7 nil))))
+)
 
-(defn row-numbers [board row]
+(defn get-row [board row]
   (filter some? (board row)))
 
-(defn col-numbers [board col]
+(defn get-col [board col]
   (filter some? (map #(nth % col) board)))
 
-(defn valid-move? [board row col num]
-  (and (nil? (get-in board [row col]))
-       (not (some #{num} (row-numbers board row)))
-       (not (some #{num} (col-numbers board col)))))
+(defn valid-number? [num]
+  (and (integer? num)
+       (<= 1 num 7)))
 
-;; 2. Fixed Mock Move Selection
-(defn get-legal-moves [board num]
+
+(defn valid-move? [board [row col num]]
+  (and (<= 0 row 6)           ; row bounds check
+       (<= 0 col 6)           ; col bounds check
+       (<= 1 num 7)           ; number bounds check
+       (nil? (get-in board [row col]))
+       (not (some #{num} (get-row board row)))
+       (not (some #{num} (get-col board col)))))
+
+(defn make-move [board [row col num]]
+  {:pre [(valid-move? board [row col num])]}
+  (assoc-in board [row col] num))
+
+;; Game specifications
+(s/def ::number (s/and int? #(<= 1 % 7)))
+(s/def ::cell (s/nilable ::number))
+(s/def ::row (s/coll-of ::cell :count 7))
+(s/def ::board (s/coll-of ::row :count 7))
+(s/def ::move (s/tuple int? int? ::number)) ; [row col num]
+
+(defrecord GameState [board turn-number])
+
+(defn new-game []
+  (->GameState (new-board) 0))
+
+(defn current-player [game]
+  (if (even? (:turn-number game)) :alice :bob))
+
+(defn make-move [game [row col num]]
+  {:pre [(s/valid? ::move [row col num])
+         (zero? (get-in (:board game) [row col]))]}
+  (-> game
+      (update :board #(assoc-in % [row col] num))
+      (update :turn-number inc)))
+
+(defn available-numbers [board]
+  (let [used (set (filter some? (flatten board)))]
+    (remove used (range 1 8))))
+
+(defn suggested-moves [board]
   (for [row (range 7)
         col (range 7)
-        :when (valid-move? board row col num)]
-    [row col]))
-
-(defn mock-select-move [state iterations]
-  (let [num (inc (mod (:last-number state) 7))
-        legal-moves (get-legal-moves (:board state) num)]
-    (when (seq legal-moves)
-      (rand-nth legal-moves))))
-
-
-;; 3. Visualization (unchanged)
-(defn print-board [board]
-  (println "\n  0 1 2 3 4 5 6")
-  (doseq [row (range 7)]
-    (print row " ")
-    (doseq [col (range 7)]
-      (print (or (get-in board [row col]) ".") " "))
-    (println)))
-
-
-;; 4. Fixed Game Simulation
-(defn simulate-game []
-  (loop [state {:board (empty-board) 
-                :player :alice
-                :last-number 0}
-         move-count 1]
-    (print-board (:board state))
-    (println (str "\n" (name (:player state)) "'s turn (Move " move-count ")"))
-    
-    (let [num (inc (mod (:last-number state) 7))
-          move (mock-select-move state 100)]
-      (if move
-        (let [[row col] move
-              new-board (assoc-in (:board state) [row col] num)]
-          (println (str "Placing " num " at (" row "," col ")"))
-          (recur {:board new-board
-                  :player (if (= (:player state) :alice) :bob :alice)
-                  :last-number num}
-                 (inc move-count)))
-        (println (str (name (:player state)) " cannot move. Game over!"))))))
+        :when (nil? (get-in board [row col]))
+        num (available-numbers board)
+        :when (valid-move? board [ row col num])]
+    [row col num]))
