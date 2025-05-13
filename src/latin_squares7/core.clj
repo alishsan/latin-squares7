@@ -3,13 +3,23 @@
   (:gen-class))
 
 (defn -main []
-  (let [board (f/new-board)
-        move1 [0 0 1]
-        move2 [0 1 2]]
-    (println "Empty board:" board)
-    (println "Valid move?" (f/valid-move? board 0 0 1))
-    (let [updated (-> board
-                    (f/make-move move1)
-                    (f/make-move move2))]
-      (println "After moves:" updated)
-      (println "Game over?" (f/game-over? updated)))))
+  (println "Latin Squares MCTS Engine")
+  (let [game (f/new-game)]
+    (loop []
+      (println "Current board:")
+      (f/print-board (:board game))
+      (println "Possible moves:" (f/suggested-moves (:board game)))
+      (println "Enter 'auto' for AI move or [row col num] to move:")
+      (let [input (read-line)]
+        (when-not (= input "quit")
+          (if (= input "auto")
+            (let [trie (mcts game 1000)
+                  move (best-move trie game)]
+              (println "AI plays:" move)
+              (recur (f/make-move game move)))
+            (let [move (read-string input)]
+              (if (f/valid-move? (:board game) move)
+                (recur (f/make-move game move))
+                (do (println "Invalid move!") (recur game))))))))))
+
+
