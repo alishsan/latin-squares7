@@ -1,2 +1,14 @@
-# latin-squares7
-Alice and Bob are playing a game on a 7 × 7 board. They take turns placing numbers from 1 to 7 into the cells of the board so that no number repeats in any row or column. Alice goes first. The player who cannot make a move loses.  Who can guarantee a win regardless of how their opponent plays?
+# Latin Squares 7: A Mathematical Game
+
+A strategic two-player game played on a 7×7 board where Alice and Bob alternate placing numbers 1–7, ensuring no repeats in any row or column. The player who cannot make a valid move loses. This project explores **who can guarantee a win** (Alice or Bob) with perfect play, using Clojure and AI-driven analysis.
+
+## Key Features
+- **Game Engine**: Pure functional implementation in Clojure.
+- **AI Opponent**: Monte Carlo Tree Search (MCTS) enhanced with neural networks (Cortex).
+- **Mathematical Focus**: Solves the combinatorial problem of guaranteed wins.
+
+## Installation
+1. Ensure [Leiningen](https://leiningen.org/) is installed.
+2. Clone this repository:
+   ```bash
+   git clone https://github.com/alishsan/latin-squares7.git

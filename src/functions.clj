@@ -92,16 +92,17 @@
 
 (defn suggested-moves [board]
   {:pre [(s/valid? ::board board)]}
-  (sequence
-    (comp
-      (filter (fn [[row col]] 
-               (nil? (get-in board [row col]))))
-      (mapcat (fn [[row col]]
-                (keep (fn [num]
-                        (when (valid-move? board [row col num])
-                          [row col num]))
-                      (available-numbers board)))))
-    (for [row (range 7) col (range 7)] [row col])))
+  (->> (for [row (range 7)
+             col (range 7)
+             :when (nil? (get-in board [row col]))]
+         (for [num (range 1 8)
+               :when (valid-move? board [row col num])]
+           [row col num]))
+       (apply concat)
+       (seq)))  ;; Returns nil if no moves available
+
+
+
 
 (defn game-over? [game-state]
   {:pre [(s/valid? ::board (:board game-state))]}

@@ -53,3 +53,81 @@
         (is (= :bob (f/current-player g1)))
         (is (= 1 (:turn-number g1))))))
 )
+
+
+
+
+(deftest suggested-moves-test
+  (testing "Move suggestion correctness"
+    ;; Create a valid board according to specs
+    (let [valid-board [[1 nil nil nil nil nil nil]
+                       [nil 2 nil nil nil nil nil]
+                       [nil nil nil nil nil nil nil]
+                       [nil nil nil nil nil nil nil]
+                       [nil nil nil nil nil nil nil]
+                       [nil nil nil nil nil nil nil]
+                       [nil nil nil nil nil nil nil]]]
+      ;; First verify the board is valid
+      (is (s/valid? ::f/board valid-board))
+      
+      ;; Now test suggestions
+      (let [suggestions (f/suggested-moves valid-board)]
+        ;; Should not suggest moves to occupied cells
+        (is (not-any? #{[0 0 1]} suggestions))
+        (is (not-any? #{[1 1 2]} suggestions))
+        
+        ;; Should not suggest numbers already in row/column
+        (is (not-any? #{[0 1 1]} suggestions)) ; 1 in row 0
+        (is (not-any? #{[1 0 2]} suggestions)) ; 2 in column 0
+        
+        ;; Should suggest valid moves
+        (is (some #{[0 1 3]} suggestions))
+        (is (some #{[2 2 4]} suggestions))))))
+
+;; Updated helper function with better error reporting
+(defn create-test-board [rows]
+  {:pre [(do (println "Validating board:" (s/explain-str ::f/board rows))
+         (s/valid? ::f/board rows))]}
+  (-> (f/new-game)
+      (assoc :board (vec (map vec rows)))))
+
+(deftest game-over-test
+  (testing "Game termination conditions"
+    ;; Test empty board - game should continue
+    (is (not (f/game-over? (f/new-game))))
+    
+    ;; Test partially filled board with available moves
+    (let [partial-board (create-test-board [[1 nil nil nil nil nil nil]
+                                           [nil 2 nil nil nil nil nil]
+                                           [nil nil nil nil nil nil nil]
+                                           [nil nil nil nil nil nil nil]
+                                           [nil nil nil nil nil nil nil]
+                                           [nil nil nil nil nil nil nil]
+                                           [nil nil nil nil nil nil nil]])]
+      (is (not (f/game-over? partial-board))))
+    
+    ;; Test completely filled valid board - game should end
+    (let [full-board (create-test-board [[1 2 3 4 5 6 7]
+                                        [2 3 4 5 6 7 1]
+                                        [3 4 5 6 7 1 2]
+                                        [4 5 6 7 1 2 3]
+                                        [5 6 7 1 2 3 4]
+                                        [6 7 1 2 3 4 5]
+                                        [7 1 2 3 4 5 6]])]
+      (is (f/game-over? full-board)))
+    
+    ;; Test board with no valid moves remaining
+    (let [blocked-board (create-test-board [[1 2 3 4 5 6 7]
+                                           [2 nil nil nil nil nil nil]
+                                           [3 nil nil nil nil nil nil]
+                                           [4 nil nil nil nil nil nil]
+                                           [5 nil nil nil nil nil nil]
+                                           [6 nil nil nil nil nil nil]
+                                           [7 nil nil nil nil nil nil]])]
+      (is (f/game-over? blocked-board)))))
+
+
+
+
+
+
