@@ -33,6 +33,27 @@
         (println "AI cannot find valid move!")
         game-state))))
 
+(defn auto-play-full-game []
+  (loop [game-state (f/new-game)
+         move-count 0]
+    (f/print-board (:board game-state))
+    (println "Move #" move-count)
+    (println "Current player:" (f/current-player game-state))
+    
+    (cond
+      (f/game-over? game-state)
+      (do (println "Game over! Final move count:" move-count)
+          (f/print-board (:board game-state))
+          game-state)
+      
+      :else
+      (if-let [move (mcts/best-move (mcts/mcts game-state 500) game-state)]
+        (do (println "AI plays:" move)
+            (recur (f/make-move game-state move) (inc move-count)))
+        (do (println "AI cannot find valid move! Final state:")
+            (f/print-board (:board game-state))
+            game-state)))))
+
 (defn game-loop [game-state]
   (display-board game-state)
   (when (f/game-over? game-state)
