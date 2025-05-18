@@ -1,3 +1,4 @@
+;preserving a working copy as a branch
 (ns latin-squares7.core
   (:require [functions :as f]
             [latin-squares7.mcts :as mcts]
