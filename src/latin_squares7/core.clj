@@ -33,26 +33,28 @@
         (println "AI cannot find valid move!")
         game-state))))
 
+
+
 (defn auto-play-full-game []
   (loop [game-state (f/new-game)
          move-count 0]
+    (println "\n=== Move" move-count "===")
     (f/print-board (:board game-state))
-    (println "Move #" move-count)
-    (println "Current player:" (f/current-player game-state))
     
-    (cond
-      (f/game-over? game-state)
-      (do (println "Game over! Final move count:" move-count)
-          (f/print-board (:board game-state))
+    (if (f/game-over? game-state)
+      (do (println "Game over after" move-count "moves")
           game-state)
       
-      :else
-      (if-let [move (mcts/best-move (mcts/mcts game-state 500) game-state)]
-        (do (println "AI plays:" move)
-            (recur (f/make-move game-state move) (inc move-count)))
-        (do (println "AI cannot find valid move! Final state:")
-            (f/print-board (:board game-state))
-            game-state)))))
+      (let [trie (mcts/mcts game-state 100)  ; Reduced iterations for testing
+            move (mcts/best-move trie game-state)]
+        
+        (if move
+          (do (println "AI plays:" move)
+              (recur (f/make-move game-state move) (inc move-count)))
+          (do (println "CRITICAL ERROR: No move selected!")
+              (println "Available moves:" (take 5 (f/suggested-moves (:board game-state))))
+              (println "Trie root children:" (keys (get-in trie [[] :children])))
+              game-state))))))
 
 (defn game-loop [game-state]
   (display-board game-state)

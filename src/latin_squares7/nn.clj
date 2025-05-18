@@ -20,12 +20,5 @@
     {:policy (zipmap legal-moves (repeat prior-prob))  ; Uniform priors
      :value (rand)}))
 
-;; UCB1 formula for move selection
-(defn ucb1 [node total-visits]
-  (let [wins (:wins node 0)
-        visits (:visits node 0)
-        prior (:prior node 1.0)]
-    (if (zero? visits)
-      Double/POSITIVE_INFINITY  ; Always explore unvisited nodes
-      (+ (/ wins visits) 
-         (* prior (Math/sqrt (/ (Math/log total-visits) visits)))))))
+
+
