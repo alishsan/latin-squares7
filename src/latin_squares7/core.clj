@@ -24,7 +24,8 @@
 
 (defn handle-ai-move [game-state]
   (let [trie (mcts/mcts game-state 500)
-        move (mcts/best-move trie game-state)]
+        path [] ; Start from root
+        move (mcts/best-move trie path)] ; Now takes both trie and path
     (if move
       (do
         (println "\nAI plays:" move)
@@ -42,19 +43,17 @@
     (f/print-board (:board game-state))
     
     (if (f/game-over? game-state)
-      (do (println "Game over after" move-count "moves")
+      (do (println "Game over! Winner:" 
+                   (if (= :alice (f/current-player game-state)) "Bob" "Alice"))
           game-state)
-      
-      (let [trie (mcts/mcts game-state 100)  ; Reduced iterations for testing
-            move (mcts/best-move trie game-state)]
-        
+      (let [trie (mcts/mcts game-state 2000) ; 2000 iterations
+            move (mcts/best-move trie)]
         (if move
-          (do (println "AI plays:" move)
-              (recur (f/make-move game-state move) (inc move-count)))
-          (do (println "CRITICAL ERROR: No move selected!")
-              (println "Available moves:" (take 5 (f/suggested-moves (:board game-state))))
-              (println "Trie root children:" (keys (get-in trie [[] :children])))
+          (recur (f/make-move game-state move) (inc move-count))
+          (do (println "No valid moves left!")
               game-state))))))
+
+
 
 (defn game-loop [game-state]
   (display-board game-state)
