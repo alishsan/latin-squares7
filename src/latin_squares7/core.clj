@@ -25,7 +25,7 @@
 (defn handle-ai-move [game-state]
   (let [trie (mcts/mcts game-state 500)
         path [] ; Start from root
-        move (mcts/best-move trie path)] ; Now takes both trie and path
+        move (mcts/best-move game-state 500)] ; Now takes both trie and path
     (if move
       (do
         (println "\nAI plays:" move)

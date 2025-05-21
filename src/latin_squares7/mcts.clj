@@ -106,20 +106,25 @@
       (if (>= i iterations)
         updated-trie
         (recur updated-trie (inc i)))))))
+
 (defn best-move
-  "Select the best move from a specific node in the trie
+  "Select the best move for the current game state using MCTS
    Args:
-   - trie: The complete search tree
-   - path: The path to the current node"
-  [trie path]
-  (when-let [node (get-in trie path)]
-    (when-let [children (seq (:children node))]
-      (let [[best-move _] (->> children
-                            (sort-by (fn [[_ {:keys [visits wins]}]] 
+   - game-state: The current state of the game
+   - iterations: Number of MCTS iterations to run (default: 1000)"
+  ([game-state]
+   (best-move game-state 1000))
+  ([game-state iterations]
+   (let [trie (mcts game-state iterations)
+         root-node (get trie [])
+         children (:children root-node)]
+     (when (seq children)
+       (let [[best-move _] (->> children
+                             (sort-by (fn [[_ {:keys [visits wins]}]] 
                                       (/ wins (max 1 visits)))
                                     >)
-                            first)]
-        best-move))))
+                             first)]
+         best-move)))))
 
 (defn print-node-stats [node]
   (println "Wins:" (:wins node) "| Visits:" (:visits node)
