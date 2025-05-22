@@ -42,6 +42,23 @@
 
 
 ;; ======================
+;; Debugging Utilities
+;; ======================
+(defn explain-move [board move]
+  (when-not (valid-move? board move)
+    (println "Invalid move because:")
+    (cond
+      (not (s/valid? ::move move)) (do
+                                    (println "- Move format is invalid")
+                                    (s/explain ::move move))
+      (some? (get-in board [(first move) (second move)]))
+        (println "- Cell is already occupied")
+      (some #{(last move)} (get-row board (first move)))
+        (println "- Number exists in row")
+      (some #{(last move)} (get-col board (second move)))
+        (println "- Number exists in column"))))
+
+;; ======================
 ;; Game State Management
 ;; ======================
 (defrecord GameState [board turn-number])
@@ -55,6 +72,7 @@
 
 (defn make-move [game-state [row col num :as move]]
   (when (and game-state
+             (instance? GameState game-state)
              (s/valid? ::move move)
              (valid-move? (:board game-state) move))
     (-> game-state
@@ -74,7 +92,9 @@
 (defn make-move* [game-state move]
   {:pre [(or (nil? game-state) (s/valid? ::board (:board game-state)))
          (or (nil? move) (s/valid? ::move move))]}
-  (make-move game-state move))
+  (if (and game-state move)
+    (make-move game-state move)
+    game-state))
 ;; Add a board-safe version
 ;(defn make-move-board [board move]
 ;  (when (valid-move? board move)
@@ -91,13 +111,18 @@
 
 (defn suggested-moves [board]
   {:pre [(s/valid? ::board board)]}
-  (->> (for [row (range 7)
-             col (range 7)
-             :when (nil? (get-in board [row col]))
-             num (range 1 8)
-             :when (valid-move? board [row col num])]
-         [row col num])
-       (seq)))
+  (let [empty-cells (for [row (range 7)
+                         col (range 7)
+                         :when (nil? (get-in board [row col]))]
+                     [row col])
+        available-nums (available-numbers board)]
+    (->> empty-cells
+         (mapcat (fn [[row col]]
+                   (keep (fn [num]
+                           (when (valid-move? board [row col num])
+                             [row col num]))
+                         available-nums)))
+         (seq))))
 
 
 (defn debug-move-generation [board]
@@ -125,8 +150,9 @@
 
 (defn game-over? [game-state]
   {:pre [(s/valid? ::board (:board game-state))]}
-  (or (every? some? (flatten (:board game-state)))
-      (empty? (suggested-moves (:board game-state)))))
+  (or (every? some? (flatten (:board game-state)))  ;; Board is full
+      (let [moves (suggested-moves (:board game-state))]
+        (empty? moves))))  ;; No valid moves available
 
 ;; ======================
 ;; Serialization
@@ -145,23 +171,6 @@
 
 (defn load-game [path]
   (-> path slurp read-string edn->game-state))
-
-;; ======================
-;; Debugging Utilities
-;; ======================
-(defn explain-move [board move]
-  (when-not (valid-move? board move)
-    (println "Invalid move because:")
-    (cond
-      (not (s/valid? ::move move)) (do
-                                    (println "- Move format is invalid")
-                                    (s/explain ::move move))
-      (some? (get-in board [(first move) (second move)]))
-        (println "- Cell is already occupied")
-      (some #{(last move)} (get-row board (first move)))
-        (println "- Number exists in row")
-      (some #{(last move)} (get-col board (second move)))
-        (println "- Number exists in column"))))
 
 (defn print-board [board]
   (doseq [row board]

@@ -130,15 +130,13 @@
 (deftest best-move-test
   (testing "MCTS best-move returns a valid move on a new game"
     (let [game (f/new-game)
-          trie (mcts/mcts game 50)
-          move (mcts/best-move trie)]
+          move (mcts/best-move game 100)]
       (is (vector? move))
       (is (= 3 (count move)))
       (is (f/valid-move? (:board game) move))))
   (testing "MCTS best-move returns a valid move after one move"
     (let [game (f/make-move (f/new-game) [0 0 1])
-          trie (mcts/mcts game 50)
-          move (mcts/best-move trie)]
+          move (mcts/best-move game 100)]
       (is (vector? move))
       (is (= 3 (count move)))
       (is (f/valid-move? (:board game) move)))))
