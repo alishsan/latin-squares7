@@ -1,7 +1,8 @@
 (ns latin-squares7.core-test
   (:require [clojure.test :refer :all]
     [clojure.spec.alpha :as s]
-            [functions :as f]))
+            [functions :as f]
+            [latin-squares7.mcts :as mcts]))
 
 (deftest game-logic-test
   (testing "Number validation"
@@ -125,6 +126,22 @@
                                            [6 nil nil nil nil nil nil]
                                            [7 nil nil nil nil nil nil]])]
       (is (f/game-over? blocked-board)))))
+
+(deftest best-move-test
+  (testing "MCTS best-move returns a valid move on a new game"
+    (let [game (f/new-game)
+          trie (mcts/mcts game 50)
+          move (mcts/best-move trie)]
+      (is (vector? move))
+      (is (= 3 (count move)))
+      (is (f/valid-move? (:board game) move))))
+  (testing "MCTS best-move returns a valid move after one move"
+    (let [game (f/make-move (f/new-game) [0 0 1])
+          trie (mcts/mcts game 50)
+          move (mcts/best-move trie)]
+      (is (vector? move))
+      (is (= 3 (count move)))
+      (is (f/valid-move? (:board game) move)))))
 
 
 

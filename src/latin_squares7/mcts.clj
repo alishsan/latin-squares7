@@ -38,29 +38,37 @@
           path)))))
 
 (defn expand-node [trie path game-state]
-  "Expand the tree by adding legal moves"
+  "Expand the tree by adding legal moves and update parent's :children map"
   (let [legal-moves (f/suggested-moves (:board game-state))]
     (if (seq legal-moves)
-      (reduce (fn [t move]
-                (assoc-in t (conj path move) (new-node)))
-              trie
-              (take 50 (shuffle legal-moves))) ; Limit expansion for performance
+      (let [moves (take 50 (shuffle legal-moves))
+            trie-with-children (reduce (fn [t move]
+                                         (assoc-in t (conj path move) (new-node)))
+                                       trie
+                                       moves)
+            ;; Use the actual child nodes from the trie
+            children-map (into {} (map (fn [move] [move (get-in trie-with-children (conj path move))]) moves))]
+        (update-in trie-with-children path #(assoc % :children children-map)))
       trie)))
 
 (defn backpropagate [trie path result]
-  "Backpropagate results through the tree"
+  "Backpropagate results through the tree and update parent :children maps"
   (let [result (double result)]
     (loop [t trie
+           p []
            [m & more] path
            r result
-           perspective 1.0] ; Track player perspective
+           perspective 1.0]
       (if (nil? m)
         t
-        (let [node (get t m (new-node))
+        (let [node (get-in t (conj p m) (new-node))
               updated (-> node
-                       (update :wins + (* r perspective))
-                       (update :visits inc))]
-          (recur (assoc t m updated) more (- r) (- perspective)))))))
+                        (update :wins + (* r perspective))
+                        (update :visits inc))
+              t' (assoc-in t (conj p m) updated)
+              ;; Always update parent's :children map, even for root
+              t'' (update-in t' p #(assoc % :children (assoc (:children %) m updated)))]
+          (recur t'' (conj p m) more (- r) (- perspective)))))))
 
 (defn simulate [game-state]
   "Run a random simulation from current state"
@@ -87,40 +95,55 @@
           game-state (reduce (fn [gs m] (or (f/make-move gs m) gs))
                             initial-game-state
                             path)
-          trie (if (and (not (f/game-over? game-state))
-                        (empty? (get-in trie path)))
-                (expand-node trie path game-state)
-                trie)
-          result (simulate game-state)
-          updated-trie (backpropagate trie path result)]
-      
+          node (get-in trie path)
+          need-expand (and (not (f/game-over? game-state))
+                            (empty? (:children node)))
+          [trie path game-state skip?] (if need-expand
+                                          (let [t (expand-node trie path game-state)
+                                                moves (keys (:children (get-in t path)))]
+                                            (if (seq moves)
+                                              [(assoc t [] (get-in t []))
+                                               (conj path (first moves))
+                                               (f/make-move game-state (first moves))
+                                               false]
+                                              [(assoc t [] (get-in t []))
+                                               path
+                                               game-state
+                                               true]))
+                                          [(assoc trie [] (get-in trie []))
+                                           path
+                                           game-state
+                                           false])
+          result (when-not skip? (simulate game-state))
+          updated-trie (if-not skip?
+                         (backpropagate trie path result)
+                         trie)
+          updated-trie (assoc updated-trie [] (get-in updated-trie []))]
       (when (zero? (mod i 100))
         (let [root (get updated-trie [])
               last-move (last path)]
           (println "Iteration" i 
                    "| Nodes:" (count (keys updated-trie))
                    "| Last move:" last-move
-                   "| Root wins:" (:wins root)
-                   "| Root visits:" (:visits root)))
-      
+                   "| Root wins:" (when root (:wins root))
+                   "| Root visits:" (when root (:visits root)))))
       (if (>= i iterations)
         updated-trie
-        (recur updated-trie (inc i)))))))
+        (recur updated-trie (inc i))))))
 
 (defn best-move
-  "Select the best move for the current game state using MCTS
+  "Select the best move from a given trie and node path.
    Args:
-   - game-state: The current state of the game
-   - iterations: Number of MCTS iterations to run (default: 1000)"
-  ([game-state]
-   (best-move game-state 1000))
-  ([game-state iterations]
-   (let [trie (mcts game-state iterations)
-         root-node (get trie [])
-         children (:children root-node)]
+   - trie: The MCTS search tree
+   - path: The path to the node in the trie (default: root [])"
+  ([trie]
+   (best-move trie []))
+  ([trie path]
+   (let [node (get-in trie path)
+         children (:children node)]
      (when (seq children)
        (let [[best-move _] (->> children
-                             (sort-by (fn [[_ {:keys [visits wins]}]] 
+                             (sort-by (fn [[_ {:keys [visits wins]}]]
                                       (/ wins (max 1 visits)))
                                     >)
                              first)]
