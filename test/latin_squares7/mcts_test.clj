@@ -1,7 +1,8 @@
 (ns latin-squares7.mcts-test
   (:require [clojure.test :refer :all]
             [functions :as f]
-            [latin-squares7.mcts :as mcts]))
+            [latin-squares7.mcts :as mcts]
+            [latin-squares7.mcts :refer [mcts]]))
 
 ;; Helper functions for testing
 (defn create-test-board [rows]
@@ -9,10 +10,14 @@
   (f/->GameState (vec (map vec rows)) 0))
 
 (defn get-node-stats [trie path]
-  (let [node (get-in trie path (mcts/new-node))]
-    {:wins (:wins node)
-     :visits (:visits node)
-     :children-count (count (:children node))}))
+  (let [node (get-in trie path)]
+    (if node
+      {:wins (:wins node 0.0)
+       :visits (:visits node 0)
+       :children-count (count (:children node {}))}
+      {:wins 0.0
+       :visits 0
+       :children-count 0})))
 
 ;; Test UCB1 calculation
 (deftest ucb1-test
@@ -59,19 +64,29 @@
       
       ;; Test root node expansion
       (let [root-node (get expanded-trie [])]
-        (is (pos? (count (:children root-node))))
-        (is (<= (count (:children root-node)) 50))  ;; Max 50 children
-        (is (every? #(f/valid-move? (:board game) %) (keys (:children root-node)))))
+        (is (some? root-node) "Root node should exist")
+        (is (map? root-node) "Root node should be a map")
+        (is (contains? root-node :children) "Root node should have children")
+        (is (pos? (count (:children root-node))) "Root node should have children")
+        (is (<= (count (:children root-node)) 50) "Should have at most 50 children")
+        (is (every? #(f/valid-move? (:board game) (mcts/decompress-move %)) 
+                   (keys (:children root-node))) 
+            "All children should be valid moves"))
       
       ;; Test expansion after some moves
       (let [game-with-moves (-> game
                                (f/make-move [0 0 1])
                                (f/make-move [1 1 2]))
-            path [[0 0 1] [1 1 2]]
+            path [(mcts/compress-move [0 0 1]) (mcts/compress-move [1 1 2])]
             expanded-trie (mcts/expand-node trie path game-with-moves)
             node (get-in expanded-trie path)]
-        (is (pos? (count (:children node))))
-        (is (every? #(f/valid-move? (:board game-with-moves) %) (keys (:children node))))))))
+        (is (some? node) "Node should exist")
+        (is (map? node) "Node should be a map")
+        (is (contains? node :children) "Node should have children")
+        (is (pos? (count (:children node))) "Node should have children")
+        (is (every? #(f/valid-move? (:board game-with-moves) (mcts/decompress-move %)) 
+                   (keys (:children node)))
+            "All children should be valid moves")))))
 
 ;; Test simulation
 (deftest simulate-test
@@ -133,19 +148,24 @@
           trie (mcts/mcts game iterations)]
       
       ;; Test trie structure
-      (is (map? trie))
-      (is (pos? (count trie)))
+      (is (map? trie) "Trie should be a map")
+      (is (pos? (count trie)) "Trie should not be empty")
       
       ;; Test root node
-      (let [root-stats (get-node-stats trie [])]
-        (is (>= (:visits root-stats) iterations))
-        (is (pos? (:children-count root-stats))))
+      (let [root (get trie [])
+            root-stats (get-node-stats trie [])]
+        (is (some? root) "Root node should exist")
+        (is (map? root) "Root node should be a map")
+        (is (contains? root :visits) "Root node should have visits")
+        (is (contains? root :children) "Root node should have children")
+        (is (>= (:visits root-stats) iterations) "Root visits should be >= iterations")
+        (is (pos? (:children-count root-stats)) "Root should have children"))
       
       ;; Test best move selection
-      (let [move (mcts/best-move game iterations)]
-        (is (vector? move))
-        (is (= 3 (count move)))
-        (is (f/valid-move? (:board game) move))))))
+      (let [move (mcts/best-move trie)]
+        (is (vector? move) "Best move should be a vector")
+        (is (= 3 (count move)) "Best move should have 3 elements")
+        (is (f/valid-move? (:board game) move) "Best move should be valid")))))
 
 ;; Test edge cases
 (deftest mcts-edge-cases-test

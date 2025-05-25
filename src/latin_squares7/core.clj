@@ -24,8 +24,7 @@
 
 (defn handle-ai-move [game-state]
   (let [trie (mcts/mcts game-state 500)
-        path [] ; Start from root
-        move (mcts/best-move game-state 500)] ; Now takes both trie and path
+        move (mcts/best-move trie)]
     (if move
       (do
         (println "\nAI plays:" move)
@@ -33,8 +32,6 @@
       (do
         (println "AI cannot find valid move!")
         game-state))))
-
-
 
 (defn auto-play-full-game []
   (loop [game-state (f/new-game)
@@ -52,8 +49,6 @@
           (recur (f/make-move game-state move) (inc move-count))
           (do (println "No valid moves left!")
               game-state))))))
-
-
 
 (defn game-loop [game-state]
   (display-board game-state)

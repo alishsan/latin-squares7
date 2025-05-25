@@ -70,14 +70,21 @@
   (if (even? (:turn-number game-state)) :alice :bob))
 
 
-(defn make-move [game-state [row col num :as move]]
-  (when (and game-state
-             (instance? GameState game-state)
-             (s/valid? ::move move)
-             (valid-move? (:board game-state) move))
-    (-> game-state
-        (update :board #(assoc-in % [row col] num))
-        (update :turn-number inc))))
+(defn decompress-move [move-int]
+  [(quot move-int 100)
+   (quot (mod move-int 100) 10)
+   (mod move-int 10)])
+
+(defn make-move [game-state move]
+  (let [move-vec (if (integer? move) (decompress-move move) move)
+        [row col num] move-vec]
+    (when (and game-state
+               (instance? GameState game-state)
+               (s/valid? ::move move-vec)
+               (valid-move? (:board game-state) move-vec))
+      (-> game-state
+          (update :board #(assoc-in % [row col] num))
+          (update :turn-number inc)))))
 
 
 (defn valid-game-state? [game-state]
@@ -112,9 +119,9 @@
 (defn suggested-moves [board]
   {:pre [(s/valid? ::board board)]}
   (let [empty-cells (for [row (range 7)
-                         col (range 7)
-                         :when (nil? (get-in board [row col]))]
-                     [row col])
+                          col (range 7)
+                          :when (nil? (get-in board [row col]))]
+                      [row col])
         available-nums (available-numbers board)]
     (->> empty-cells
          (mapcat (fn [[row col]]
@@ -128,25 +135,20 @@
 (defn debug-move-generation [board]
   (println "\n=== DEBUGGING MOVE GENERATION ===")
   (println "Board validation:" (s/valid? ::board board))
-  
   (let [empty-cells (for [row (range 7)
-                        col (range 7)
-                        :when (nil? (get-in board [row col]))]
-                    [row col])]
-    
+                          col (range 7)
+                          :when (nil? (get-in board [row col]))]
+                      [row col])]
     (println "Empty cells:" (count empty-cells))
-    
     (doseq [[row col] (take 5 empty-cells)]
       (let [row-numbers (set (filter some? (board row)))
             col-numbers (set (filter some? (map #(nth % col) board)))
             available (remove (into row-numbers col-numbers) (range 1 8))]
-        
         (println (format "Cell [%d %d] - blocked by row: %s, col: %s | can take: %s"
                          row col
                          (or row-numbers "none")
                          (or col-numbers "none")
-                         (seq available))))))
-)
+                         (seq available)))))))
 
 (defn game-over? [game-state]
   {:pre [(s/valid? ::board (:board game-state))]}
@@ -175,3 +177,6 @@
 (defn print-board [board]
   (doseq [row board]
     (println (mapv #(if (nil? %) "." %) row))))
+
+(println "Board valid?" (s/valid? ::board (:board (new-game))))
+(println "Suggested moves:" (suggested-moves (:board (new-game))))
