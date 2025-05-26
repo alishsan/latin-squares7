@@ -1,6 +1,7 @@
 (ns latin-squares7.core
-  (:require [functions :as f]
+  (:require [latin-squares7.functions :as f]
             [latin-squares7.mcts :as mcts]
+            [latin-squares7.nn :as nn]
             [clojure.string :as str]))
 
 (defn display-board [game-state]
@@ -22,33 +23,44 @@
       (println "Error reading move:" (.getMessage e))
       nil)))
 
-(defn handle-ai-move [game-state]
-  (let [trie (mcts/mcts game-state 500)
-        move (mcts/best-move trie)]
-    (if move
-      (do
-        (println "\nAI plays:" move)
-        (f/make-move game-state move))
-      (do
-        (println "AI cannot find valid move!")
-        game-state))))
+(defn handle-ai-move [game-state ai-type]
+  (case ai-type
+    :mcts (let [move (mcts/mcts game-state 500)]
+            (if move
+              (do
+                (println "\nMCTS AI plays:" move)
+                (f/make-move game-state move))
+              (do
+                (println "MCTS AI cannot find valid move!")
+                game-state)))
+    :neural (let [move (nn/get-best-move game-state)]
+              (if move
+                (do
+                  (println "\nNeural AI plays:" move)
+                  (f/make-move game-state move))
+                (do
+                  (println "Neural AI cannot find valid move!")
+                  game-state)))))
 
-(defn auto-play-full-game []
-  (loop [game-state (f/new-game)
+(defn auto-play-from-position [game-state max-moves]
+  "Autoplay from a given position using the neural network model"
+  (loop [state game-state
          move-count 0]
     (println "\n=== Move" move-count "===")
-    (f/print-board (:board game-state))
+    (f/print-board (:board state))
     
-    (if (f/game-over? game-state)
-      (do (println "Game over! Winner:" 
-                   (if (= :alice (f/current-player game-state)) "Bob" "Alice"))
-          game-state)
-      (let [trie (mcts/mcts game-state 2000) ; 2000 iterations
-            move (mcts/best-move trie)]
+    (if (or (>= move-count max-moves)
+            (f/game-over? state))
+      (do (println "Game over! Final board:")
+          (f/print-board (:board state))
+          (println "Moves made:" move-count)
+          (println "Solved?" (f/solved? state))
+          state)
+      (let [move (nn/get-best-move state)]
         (if move
-          (recur (f/make-move game-state move) (inc move-count))
+          (recur (f/make-move state move) (inc move-count))
           (do (println "No valid moves left!")
-              game-state))))))
+              state))))))
 
 (defn game-loop [game-state]
   (display-board game-state)
@@ -60,13 +72,19 @@
   (println "\nPossible moves:" (take 10 (f/suggested-moves (:board game-state))))
   (println "\nOptions:")
   (println "1. Enter move as [row col num]")
-  (println "2. Type 'auto' for AI move")
-  (println "3. Type 'quit' to exit")
+  (println "2. Type 'mcts' for MCTS AI move")
+  (println "3. Type 'neural' for Neural Network AI move")
+  (println "4. Type 'autoplay' to start autoplay from current position")
+  (println "5. Type 'quit' to exit")
   
   (let [input (read-line)]
     (cond
       (= input "quit") (do (println "Game over!") (System/exit 0))
-      (= input "auto") (recur (handle-ai-move game-state))
+      (= input "mcts") (recur (handle-ai-move game-state :mcts))
+      (= input "neural") (recur (handle-ai-move game-state :neural))
+      (= input "autoplay") (do (println "Starting autoplay from current position...")
+                              (auto-play-from-position game-state 100)
+                              (System/exit 0))
       :else (if-let [move (get-valid-move game-state input)]
               (recur (f/make-move game-state move))
               (recur game-state)))))

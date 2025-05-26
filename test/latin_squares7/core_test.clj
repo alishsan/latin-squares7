@@ -1,7 +1,7 @@
 (ns latin-squares7.core-test
   (:require [clojure.test :refer :all]
     [clojure.spec.alpha :as s]
-            [functions :as f]
+            [latin-squares7.functions :as f]
             [latin-squares7.mcts :as mcts]))
 
 (deftest game-logic-test
@@ -130,8 +130,12 @@
 (deftest best-move-test
   (testing "MCTS best-move returns a valid move on a new game"
     (let [game (f/new-game)
-          trie (mcts/mcts game 100)
-          move (mcts/best-move trie)]
+          tree {:root {:wins 0 
+                      :visits 1 
+                      :children {[0 0 1] {:wins 1 :visits 2 :children {}}
+                               [0 0 2] {:wins 0 :visits 1 :children {}}}
+                      :state game}}
+          move (mcts/best-move tree)]
       (is (vector? move))
       (is (= 3 (count move)))
       (is (f/valid-move? (:board game) move))))
@@ -139,10 +143,12 @@
     (let [game (f/new-game)
           first-move [0 0 1]
           game-after-move (f/make-move game first-move)
-          trie (mcts/mcts game-after-move 100)
-          compressed-move (mcts/compress-move first-move)
-          path [compressed-move]
-          move (mcts/best-move trie path)]
+          tree {:root {:wins 0 
+                      :visits 1 
+                      :children {[0 1 2] {:wins 1 :visits 2 :children {}}
+                               [0 1 3] {:wins 0 :visits 1 :children {}}}
+                      :state game-after-move}}
+          move (mcts/best-move tree)]
       (is (vector? move))
       (is (= 3 (count move)))
       (is (f/valid-move? (:board game-after-move) move)))))

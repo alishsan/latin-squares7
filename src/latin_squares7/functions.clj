@@ -1,4 +1,4 @@
-(ns functions
+(ns latin-squares7.functions
   (:require [clojure.spec.alpha :as s]
             [clojure.java.io :as io]))
 
@@ -34,11 +34,13 @@
   (and (integer? num)
        (<= 1 num 7)))
 
-(defn valid-move? [board [row col num :as move]]
-  (and (s/valid? ::move move)
+(defn valid-move? [board [row col num]]
+  (and (<= 0 row 6)
+       (<= 0 col 6)
+       (<= 1 num 7)
        (nil? (get-in board [row col]))
-       (not (contains? (set (get-row board row)) num))
-       (not (contains? (set (get-col board col)) num))))
+       (not-any? #(= num %) (get board row))
+       (not-any? #(= num %) (map #(get % col) board))))
 
 
 ;; ======================
@@ -64,10 +66,11 @@
 (defrecord GameState [board turn-number])
 
 (defn new-game []
-  (->GameState (new-board) 0))
+  {:board (vec (repeat 7 (vec (repeat 7 nil))))
+   :current-player :alice})
 
 (defn current-player [game-state]
-  (if (even? (:turn-number game-state)) :alice :bob))
+  (:current-player game-state))
 
 
 (defn decompress-move [move-int]
@@ -76,15 +79,14 @@
    (mod move-int 10)])
 
 (defn make-move [game-state move]
-  (let [move-vec (if (integer? move) (decompress-move move) move)
-        [row col num] move-vec]
-    (when (and game-state
-               (instance? GameState game-state)
-               (s/valid? ::move move-vec)
-               (valid-move? (:board game-state) move-vec))
-      (-> game-state
-          (update :board #(assoc-in % [row col] num))
-          (update :turn-number inc)))))
+  (let [board (:board game-state)
+        [row col num] move
+        new-board (assoc-in board [row col] num)
+        new-player (if (= :alice (:current-player game-state))
+                    :bob
+                    :alice)]
+    {:board new-board
+     :current-player new-player}))
 
 
 (defn valid-game-state? [game-state]
@@ -102,10 +104,6 @@
   (if (and game-state move)
     (make-move game-state move)
     game-state))
-;; Add a board-safe version
-;(defn make-move-board [board move]
-;  (when (valid-move? board move)
-;    (assoc-in board [row col] num)))
 
 ;; ======================
 ;; Move Analysis
@@ -117,19 +115,12 @@
 
 
 (defn suggested-moves [board]
-  {:pre [(s/valid? ::board board)]}
-  (let [empty-cells (for [row (range 7)
-                          col (range 7)
-                          :when (nil? (get-in board [row col]))]
-                      [row col])
-        available-nums (available-numbers board)]
-    (->> empty-cells
-         (mapcat (fn [[row col]]
-                   (keep (fn [num]
-                           (when (valid-move? board [row col num])
-                             [row col num]))
-                         available-nums)))
-         (seq))))
+  (for [row (range 7)
+        col (range 7)
+        :when (nil? (get-in board [row col]))
+        num (range 1 8)
+        :when (valid-move? board [row col num])]
+    [row col num]))
 
 
 (defn debug-move-generation [board]
@@ -150,11 +141,15 @@
                          (or col-numbers "none")
                          (seq available)))))))
 
+(defn solved? [game-state]
+  (let [board (:board game-state)]
+    (and (every? some? (flatten board))
+         (every? #(valid-move? board %) (suggested-moves board)))))
+
 (defn game-over? [game-state]
-  {:pre [(s/valid? ::board (:board game-state))]}
-  (or (every? some? (flatten (:board game-state)))  ;; Board is full
-      (let [moves (suggested-moves (:board game-state))]
-        (empty? moves))))  ;; No valid moves available
+  (let [board (:board game-state)]
+    (or (every? some? (flatten board))
+        (empty? (suggested-moves board)))))
 
 ;; ======================
 ;; Serialization
@@ -176,7 +171,7 @@
 
 (defn print-board [board]
   (doseq [row board]
-    (println (mapv #(if (nil? %) "." %) row))))
+    (println (map #(or % "_") row))))
 
 (println "Board valid?" (s/valid? ::board (:board (new-game))))
 (println "Suggested moves:" (suggested-moves (:board (new-game))))
