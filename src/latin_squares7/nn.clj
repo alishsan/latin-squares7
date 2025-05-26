@@ -46,84 +46,127 @@
     {:layers layers
      :learning-rate 0.01}))
 
-(defn get-tensor-dims [tensor]
-  "Get tensor dimensions, handling both tensor and scalar cases"
+(defn get-tensor-shape [tensor]
+  "Get the shape of a tensor using available operations"
   (if (number? tensor)
-    [1 1]  ; For scalar values, treat as 1x1 tensor
+    [1]  ; Scalar is a 0D tensor, but we'll treat it as 1D
     (let [data (seq tensor)]
       (if (nil? data)
-        [1 1]  ; For nil or empty tensors, treat as 1x1
-        (let [rows (count data)
-              first-row (first data)]
-          (if (number? first-row)
-            [rows 1]  ; For 1D tensors, treat as Nx1
-            [rows (count first-row)]))))))  ; For 2D tensors, get actual dimensions
+        [1]  ; Empty tensor
+        (let [first-elem (first data)]
+          (if (number? first-elem)
+            [(count data)]  ; 1D tensor
+            [(count data) (count first-elem)]))))))  ; 2D tensor
+
+(defn get-tensor-dims [tensor]
+  "Get tensor dimensions, handling both tensor and scalar cases"
+  (let [shape (get-tensor-shape tensor)]
+    (case (count shape)
+      0 [1 1]  ; Scalar
+      1 (let [len (first shape)]
+          (if (= len 1)
+            [1 1]  ; Single element
+            [len 1]))  ; Column vector
+      2 shape  ; 2D tensor
+      [1 1])))  ; Fallback
 
 (defn tensor-select [tensor dims idx]
   "Safely select from a tensor based on its dimensions"
-  (let [[rows cols] dims]
+  (let [[rows cols] dims
+        shape (get-tensor-shape tensor)]
     (cond
       (number? tensor) tensor  ; If it's a scalar, return as is
-      (= rows 1) (if (= cols 1)
-                   tensor  ; 1x1 tensor
-                   (tensor/select tensor 0 idx))  ; 1xN tensor
-      (= cols 1) (tensor/select tensor idx 0)  ; Nx1 tensor
-      :else (tensor/select tensor idx :all))))  ; NxM tensor
+      (= (count shape) 1) (if (= idx 0)
+                           tensor  ; Single element tensor
+                           (nth (seq tensor) idx))  ; 1D tensor
+      :else (let [data (seq tensor)
+                  row (nth data idx)]
+              (if (number? row)
+                [row]  ; Single element row
+                (tensor/->tensor row))))))  ; Convert row to tensor
+
+(defn to-double [x]
+  "Convert a value to double, handling nil and other types"
+  (cond
+    (nil? x) 0.0
+    (number? x) (double x)
+    :else (throw (ex-info "Cannot convert to double" {:value x}))))
+
+(defn seq->tensor [x]
+  "Convert a sequence to a tensor, handling various input types"
+  (cond
+    (nil? x) (tensor/->tensor [[0.0]])
+    (number? x) (tensor/->tensor [[(to-double x)]])
+    (vector? x) (if (number? (first x))
+                  (tensor/->tensor [(mapv to-double x)])
+                  (tensor/->tensor (mapv #(mapv to-double %) x)))
+    (seq? x) (if (number? (first x))
+               (tensor/->tensor [(mapv to-double (vec x))])
+               (tensor/->tensor (mapv #(mapv to-double %) (vec x))))
+    :else (throw (ex-info "Cannot convert to tensor" {:value x}))))
+
+(defn ensure-tensor [x]
+  "Convert a value to a tensor if it isn't already"
+  (cond
+    (tensor/tensor? x) x
+    :else (seq->tensor x)))
+
+(defn broadcast-shapes [a b]
+  "Ensure tensors have compatible shapes for operations"
+  (let [a-tensor (ensure-tensor a)
+        b-tensor (ensure-tensor b)
+        a-shape (get-tensor-shape a-tensor)
+        b-shape (get-tensor-shape b-tensor)]
+    (cond
+      (= a-shape b-shape) [a-tensor b-tensor]  ; Same shape
+      (= (count a-shape) 1) [(tensor/->tensor (repeat (first b-shape) (first a-shape))) b-tensor]  ; Broadcast a
+      (= (count b-shape) 1) [a-tensor (tensor/->tensor (repeat (first a-shape) (first b-shape)))]  ; Broadcast b
+      :else (throw (ex-info "Incompatible shapes" {:a-shape a-shape :b-shape b-shape})))))
+
+(defn tensor-add [a b]
+  "Add tensors with broadcasting using df/+"
+  (df/+ (ensure-tensor a) (ensure-tensor b)))
+
+(defn tensor-multiply [a b]
+  "Multiply tensors with broadcasting using df/*"
+  (df/* (ensure-tensor a) (ensure-tensor b)))
 
 (defn matrix-multiply [a b]
-  "Matrix multiplication using basic tensor operations"
-  (let [a-dims (get-tensor-dims a)
-        b-dims (get-tensor-dims b)
-        a-rows (first a-dims)
-        b-cols (second b-dims)
-        result (tensor/->tensor (repeat a-rows (repeat b-cols 0.0)))]
-    (loop [i 0]
-      (if (>= i a-rows)
-        result
-        (let [row (tensor-select a a-dims i)
-              new-row (loop [j 0
-                           acc []]
-                       (if (>= j b-cols)
-                         (tensor/->tensor acc)
-                         (let [col (tensor-select b b-dims j)
-                               dot-product (df/+ (df/* row col))]
-                           (recur (inc j) (conj acc dot-product)))))]
-          (recur (inc i)))))))
+  "Matrix multiplication using tensor operations"
+  (let [a-tensor (ensure-tensor a)
+        b-tensor (ensure-tensor b)
+        a-dims (get-tensor-dims a-tensor)
+        b-dims (get-tensor-dims b-tensor)
+        [a-rows a-cols] a-dims
+        [b-rows b-cols] b-dims]
+    (if (and (= a-cols b-rows) (> a-rows 0) (> b-cols 0))
+      (tensor/->tensor
+       (for [i (range a-rows)]
+         (for [j (range b-cols)]
+           (reduce + (map * (tensor-select a-tensor a-dims i)
+                            (map #(nth % j) (seq b-tensor)))))))
+      (throw (ex-info "Incompatible matrix dimensions for multiplication"
+                     {:a-dims a-dims :b-dims b-dims})))))
 
 (defn transpose [tensor]
-  "Transpose a tensor using the correct dimensions"
-  (let [dims (get-tensor-dims tensor)
-        [rows cols] dims]
-    (cond
-      (number? tensor) tensor  ; Scalar remains unchanged
-      (= rows 1) (if (= cols 1)
-                   tensor  ; 1x1 tensor remains unchanged
-                   (tensor/->tensor (map vector (seq tensor))))  ; Convert 1xN to Nx1
-      (= cols 1) (tensor/->tensor [(seq tensor)])  ; Convert Nx1 to 1xN
-      :else (let [result (tensor/->tensor (repeat cols (repeat rows 0.0)))]
-              (loop [i 0]
-                (if (>= i rows)
-                  result
-                  (let [row (tensor-select tensor dims i)]
-                    (loop [j 0]
-                      (if (>= j cols)
-                        (recur (inc i))
-                        (do
-                          (tensor/mset! result j i (tensor/mget row j))
-                          (recur (inc j))))))))))))
+  "Transpose a tensor using df/transpose"
+  (df/transpose (ensure-tensor tensor)))
 
 (defn forward-pass [network input]
   "Perform a forward pass through the network"
   (loop [layers (:layers network)
-         activations [input]
+         activations [(ensure-tensor input)]
          zs []]
     (if (empty? layers)
       {:activations (vec activations)
        :zs (vec zs)}
       (let [layer (first layers)
-            z (df/+ (matrix-multiply (:weights layer) (last activations))
-                   (:biases layer))
-            activation (tensor/typed-compute-tensor :float64 [1] [z] sigmoid)]
+            weights (ensure-tensor (:weights layer))
+            biases (ensure-tensor (:biases layer))
+            last-activation (ensure-tensor (last activations))
+            z (df/+ (df/matmul weights last-activation)
+                   biases)
+            activation (df/map sigmoid z)]
         (recur (rest layers)
                (conj activations activation)
                (conj zs z))))))
@@ -133,23 +176,24 @@
   (let [activations (:activations forward-result)
         zs (:zs forward-result)
         layers (:layers network)
-        learning-rate (:learning-rate network)
+        learning-rate (to-double (:learning-rate network))
         
         ;; Calculate output layer error
         output-activation (last activations)
-        output-error (df/- output-activation target)
+        target-tensor (ensure-tensor target)
+        output-error (df/- output-activation target-tensor)
         output-delta (df/* output-error
-                          (tensor/typed-compute-tensor :float64 [1] [output-activation] sigmoid-derivative))
+                          (df/map sigmoid-derivative output-activation))
         
         ;; Backpropagate error
         deltas (reduce (fn [deltas [layer z activation prev-activation]]
-                        (let [weight-delta (matrix-multiply (first deltas)
-                                                          (transpose prev-activation))
+                        (let [weight-delta (df/matmul (first deltas)
+                                                    (df/transpose prev-activation))
                               bias-delta (first deltas)
-                              error (matrix-multiply (transpose (:weights layer))
-                                                   (first deltas))
+                              error (df/matmul (df/transpose (:weights layer))
+                                             (first deltas))
                               delta (df/* error
-                                        (tensor/typed-compute-tensor :float64 [1] [activation] sigmoid-derivative))]
+                                        (df/map sigmoid-derivative activation))]
                           (conj deltas delta)))
                       [output-delta]
                       (map vector
@@ -160,12 +204,12 @@
         
         ;; Update weights and biases
         new-layers (map (fn [layer delta activation prev-activation]
-                         (let [weight-update (df/* learning-rate
-                                                 (matrix-multiply delta
-                                                                (transpose prev-activation)))
+                         (let [weight-update (df/* learning-rate 
+                                                 (df/matmul delta
+                                                           (df/transpose prev-activation)))
                                bias-update (df/* learning-rate delta)]
                            {:weights (df/- (:weights layer) weight-update)
-                            :biases (df/- (:biases layer) bias-update)}))
+                            :biases (df/+ (:biases layer) bias-update)}))
                        (reverse layers)
                        (reverse deltas)
                        (reverse (rest activations))

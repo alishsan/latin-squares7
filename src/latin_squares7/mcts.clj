@@ -1,7 +1,6 @@
 (ns latin-squares7.mcts
   (:require [latin-squares7.functions :as f]
-            [clojure.math :as math]
-            [clojure.java.io :as io]))
+            [clojure.math :as math]))
 
 ;; Debug logging setup
 (def debug-log-file "mcts-debug.log")
@@ -10,7 +9,7 @@
   (println msg))
 
 ;; Node representation
-(defrecord Node [wins visits prior children])
+(defrecord Node [wins visits prior children state])
 
 ;; Custom print-method for Node to make output more concise
 (defmethod print-method Node [node writer]
@@ -20,37 +19,31 @@
                         (:prior node)
                         (count (:children node)))))
 
-(defn new-node []
-  {:wins 0
-   :visits 0
-   :children {}
-   :state nil})
+(defn compress-move [[r c n]]
+  (+ (* 1000 r) (* 100 c) n))
 
-;; UCB1 formula for move selection
+(defn decompress-move [move-int]
+  [(quot move-int 1000)
+   (quot (mod move-int 1000) 100)
+   (mod move-int 100)])
+
+(defn new-node [state prior]
+  (->Node 0 0 prior {} state))
+
 (defn ucb1 [node parent-visits]
-  (let [visits (:visits node)
-        wins (:wins node)
-        c (Math/sqrt 2)]
+  (let [wins (:wins node)
+        visits (:visits node)
+        prior (:prior node)]
     (if (zero? visits)
       Double/POSITIVE_INFINITY
       (+ (/ wins visits)
-         (* c (Math/sqrt (/ (Math/log parent-visits) visits)))))))
+         (* prior (Math/sqrt (/ parent-visits (inc visits))))))))
 
-;; Utility functions for move compression
-(defn compress-move [[r c n]]
-  (+ (* 100 r) (* 10 c) n))
-
-(defn decompress-move [move-int]
-  [(quot move-int 100)
-   (quot (mod move-int 100) 10)
-   (mod move-int 10)])
-
-;; Update select-path to use compressed moves
 (defn select-path
   "Select a path from root to a leaf node using UCB1"
   [tree]
-  (loop [node tree
-         path [tree]]
+  (loop [node (:root tree)
+         path []]
     (if (or (nil? node)
             (empty? (:children node))
             (f/game-over? (:state node)))
@@ -60,7 +53,6 @@
             [move child] best-child]
         (recur child (conj path [move child]))))))
 
-;; Update expand-node to use compressed moves as keys
 (defn expand-node
   "Expand a leaf node by adding all possible moves as children"
   [node]
@@ -70,21 +62,10 @@
       node
       (let [children (into {}
                           (map (fn [move]
-                                 [move {:state (f/make-move state move)
-                                       :visits 0
-                                       :wins 0
-                                       :children {}}])
+                                 [(compress-move move) 
+                                  (new-node (f/make-move state move) 1.0)])
                                moves))]
         (assoc node :children children)))))
-
-;; Update backpropagate to use compressed moves in path
-(defn backpropagate
-  "Update node statistics along the path"
-  [path result]
-  (doseq [node (reverse path)]
-    (-> node
-        (update :visits inc)
-        (update :wins + (if (= result :win) 1 0)))))
 
 (defn simulate
   "Simulate a random playout from the given state"
@@ -92,85 +73,91 @@
   (loop [current-state state]
     (if (f/game-over? current-state)
       (if (f/solved? current-state)
-        :win
-        :loss)
+        1.0  ;; Win
+        0.0)  ;; Loss
       (let [moves (f/suggested-moves (:board current-state))]
         (if (empty? moves)
-          :loss
+          0.0  ;; Loss
           (recur (f/make-move current-state (rand-nth moves))))))))
+
+(defn backpropagate
+  "Update node statistics along the path"
+  [path result]
+  (doseq [[move node] (reverse path)]
+    (-> node
+        (update :visits inc)
+        (update :wins + result))))
 
 (defn best-move
   "Select the best move based on visit counts"
-  ([tree]
-   (when tree
-     (let [root (:root tree)
-           children (:children root)]
-       (when (seq children)
-         (let [best-child (apply max-key :visits (vals children))]
-           (first (first (filter #(= (val %) best-child) children))))))))
-  ([tree path]
-   (when (and tree path)
-     (let [node (get-in tree (cons :root path))
-           children (:children node)]
-       (when (seq children)
-         (let [best-child (apply max-key :visits (vals children))]
-           (first (first (filter #(= (val %) best-child) children)))))))))
-
-(defn get-node-stats
-  "Get statistics for a node in the tree"
   [tree]
+  (when tree
+    (let [root (:root tree)
+          children (:children root)]
+      (when (seq children)
+        (let [best-child (apply max-key :visits (vals children))]
+          (decompress-move (first (first (filter #(= (val %) best-child) children)))))))))
+
+;; Debug functions
+(defn get-node-stats [tree]
   (let [children (:children tree)]
     (map (fn [[move child]]
-           [move (:visits child) (:wins child)])
+           [move 
+            {:visits (:visits child)
+             :wins (:wins child)
+             :prior (:prior child)}])
          children)))
 
-(defn inspect-trie
-  "Debug function to inspect the tree structure"
-  [tree]
+(defn inspect-tree [tree]
   (let [root (:root tree)]
     {:root {:wins (:wins root)
             :visits (:visits root)
+            :prior (:prior root)
             :children (count (:children root))}
      :total-nodes (count (tree-seq :children :children root))}))
 
 (defn mcts
-  "Monte Carlo Tree Search implementation"
+  "Monte Carlo Tree Search"
   [state iterations]
-  (when (f/valid-game-state? state)
-    (let [initial-root {:wins 0
-                       :visits 1  ; Start with 1 visit
-                       :children {}
-                       :state state}
-          tree (atom {:root initial-root})]
-     
-      ;; First expansion of root node
-      (let [initial-moves (map compress-move (f/suggested-moves (:board state)))
-            initial-children (into {} (map (fn [move] 
-                                           [move (assoc (new-node) 
-                                                      :state (f/make-move state (decompress-move move)))]) 
-                                         initial-moves))
-            root-with-children (assoc initial-root :children initial-children)]
-        (reset! tree {:root root-with-children}))
-     
-      (dotimes [_ iterations]
-        (let [path (select-path @tree)
-              node (get-in @tree (cons :root path))
-              expanded-path (if (and (empty? (:children node))
-                                   (not (f/solved? (:state node))))
-                            (expand-node node)
-                            path)
-              expanded-node (get-in @tree (cons :root expanded-path))
-              result (if (f/valid-game-state? (:state expanded-node))
-                      (simulate (:state expanded-node))
-                      0)  ; Return 0 if state is invalid
-              _ (backpropagate expanded-path result)]))
-     
-      (let [final-tree @tree
-            root (:root final-tree)]
-        (when (seq (:children root))
-          (let [best-move-int (best-move final-tree)]
-            (when best-move-int
-              (decompress-move best-move-int))))))))
+  (let [initial-root (new-node state 1.0)  ;; Root node has prior 1.0
+        tree (atom {:root initial-root})]
+    
+    ;; First expansion of root node
+    (let [initial-moves (f/suggested-moves (:board state))
+          initial-children (into {} (map (fn [move] 
+                                         [(compress-move move)
+                                          (new-node (f/make-move state move) 1.0)]) 
+                                       initial-moves))
+          root-with-children (assoc initial-root :children initial-children)]
+      (reset! tree {:root root-with-children}))
+    
+    (dotimes [_ iterations]
+      (let [path (select-path @tree)
+            node (get-in @tree (cons :root path))
+            expanded-path (if (and (empty? (:children node))
+                                 (not (f/game-over? (:state node))))
+                          (expand-node node)
+                          path)
+            expanded-node (get-in @tree (cons :root expanded-path))
+            result (simulate (:state expanded-node))
+            _ (backpropagate expanded-path result)]))
+    
+    (best-move @tree)))
+
+(defn auto-play-full-game []
+  "Play a full game using MCTS"
+  (loop [game-state (f/new-game)
+         moves []]
+    (if (f/game-over? game-state)
+      {:board (:board game-state)
+       :moves moves
+       :solved? (f/solved? game-state)}
+      (let [move (mcts game-state 500)]  ;; Using 500 iterations for each move
+        (if move
+          (recur (f/make-move game-state move) (conj moves move))
+          {:board (:board game-state)
+           :moves moves
+           :solved? (f/solved? game-state)})))))
 
 ;; Add debug logging to help diagnose issues
 (defn debug-mcts [state iterations]
@@ -180,14 +167,3 @@
   (let [result (mcts state iterations)]
     (println "MCTS result:" result)
     result))
-
-(defn auto-play-full-game []
-  "Play a full game using MCTS AI"
-  (loop [game-state (f/new-game)
-         move-count 0]
-    (if (f/game-over? game-state)
-      game-state
-      (let [move (mcts game-state 2000)] ; 2000 iterations
-        (if move
-          (recur (f/make-move game-state move) (inc move-count))
-          game-state)))))

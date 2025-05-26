@@ -1,7 +1,7 @@
 (ns latin-squares7.core
   (:require [latin-squares7.functions :as f]
             [latin-squares7.mcts :as mcts]
-            [latin-squares7.nn :as nn]
+            [latin-squares7.nn-metamorph :as nn]
             [clojure.string :as str]))
 
 (defn display-board [game-state]
