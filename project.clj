@@ -4,11 +4,14 @@
   :license {:name "EPL-2.0 OR GPL-2.0-or-later WITH Classpath-exception-2.0"
             :url "https://www.eclipse.org/legal/epl-2.0/"}
   :dependencies [[org.clojure/clojure "1.11.1"]
+                 [org.clojure/tools.reader "1.3.6"]
+                 [ch.qos.logback/logback-classic "1.4.14"]
+                 [org.slf4j/slf4j-api "2.0.9"]
                  [thinktopic/cortex "0.9.22" :exclusions [org.bytedeco.javacpp-presets/cuda]]
                  [metosin/malli "0.11.0"]
                  [techascent/tech.ml.dataset "7.039"]
                  [scicloj/scicloj.ml "0.3"]
-                 [com.github.haifengl/smile-core "4.2.0"]
+                 [com.github.haifengl/smile-core "2.6.0" :exclusions [org.slf4j/slf4j-api]]
                  [techascent/tech.io "4.31"]
                  [cnuernber/dtype-next "10.128"]
                  [com.cnuernber/ham-fisted "2.020"]
