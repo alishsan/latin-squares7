@@ -1,6 +1,5 @@
 (ns latin-squares7.nn-metamorph
   (:require [latin-squares7.functions :as f]
-            [latin-squares7.mcts :as mcts]
             [tech.v3.dataset :as ds]
             [tech.v3.dataset.modelling :as ds-mod]
             [tech.v3.tensor :as tensor]
@@ -13,7 +12,6 @@
   (:import [org.apache.commons.math3.linear Array2DRowRealMatrix RealMatrix]))
 
 ;; Helper Functions
-
 (defn random-weight [input-size output-size]
   (* (Math/sqrt (/ 2.0 (+ input-size output-size)))
      (- (rand) 0.5)))
@@ -48,7 +46,7 @@
 (defn debug-tensor [name t]
   "Print tensor information for debugging"
   (let [dims (get-tensor-dims t)]
-    (println (format "%s: dims=%s" name dims))
+    ;; (println (format "%s: dims=%s" name dims))
     t))
 
 (defn ensure-2d-tensor [t]
@@ -149,8 +147,10 @@
              (seq a)
              (seq b))))))
 
-;; Neural Network Pipeline Components
+(defn compress-move [[r c n]]
+  (+ (* 1000 r) (* 100 c) n))
 
+;; Neural Network Pipeline Components
 (defn board->features-pipe
   "Convert board state to feature tensor"
   []
@@ -274,7 +274,7 @@
                                      {:data-type (type data)})))
           game-state (:metamorph/data (get-in ctx [:metamorph/context :original-data]))
           moves (f/suggested-moves (:board game-state))
-          move-keys (map mcts/compress-move moves)
+          move-keys (map f/compress-move moves)
           policy-logits (vec (flatten (seq (get predictions :policy))))
           policy-probs (vec (softmax policy-logits))  ; Ensure policy-probs is a vector
           value (get predictions :value)
@@ -299,8 +299,7 @@
              {:policy (or valid-policy {})
               :value (or value 0.0)}))))
 
-;; Pipeline Creation
-
+;; Pipeline Creation and Operations
 (defn create-game-pipeline []
   "Create a complete pipeline for the game"
   (morph/pipeline
@@ -308,8 +307,6 @@
    (create-layer-pipe)
    (forward-pass-pipe)
    (predict-pipe)))
-
-;; Pipeline Operations
 
 (defn run-pipeline [pipeline data mode]
   "Run a pipeline of functions on the data"
@@ -324,81 +321,90 @@
       ;; In transform mode, return the predictions
       (:metamorph/data result))))
 
-(defn train-model [n-games]
-  "Train the model using our pipeline"
-  (let [pipeline (create-game-pipeline)
-        games (repeatedly n-games mcts/auto-play-full-game)
-        trained-model (reduce (fn [model game]
-                              (try
-                                (println "\n=== Training Step ===")
-                                (println "Game state:")
-                                (f/print-board (:board game))
-                                
-                                ;; Validate model state
-                                (when-not (map? model)
-                                  (throw (ex-info "Invalid model state" 
-                                                {:model-type (type model)})))
-                                
-                                ;; Run training step
-                                (let [result (run-pipeline model game :fit)]
-                                  ;; Validate result
-                                  (when-not (map? result)
-                                    (throw (ex-info "Invalid training result" 
-                                                  {:result-type (type result)})))
-                                  
-                                  ;; Print predictions if available
-                                  (when-let [policy (:policy result)]
-                                    (println "\nPolicy predictions (top 5):")
-                                    (doseq [[move prob] (take 5 (sort-by val > policy))]
-                                      (println (format "Move %s: %.6f" move prob))))
-                                  (when-let [value (:value result)]
-                                    (println (format "Value prediction: %.6f" value)))
-                                  
-                                  ;; Return the model for next iteration
-                                  (if (contains? result :layers)
-                                    result  ; If result contains layers, it's a model
-                                    model))  ; Otherwise keep using previous model
-                                
-                                (catch Exception e
-                                  (println "\nError during training:")
-                                  (println "Exception type:" (type e))
-                                  (println "Exception message:" (.getMessage e))
-                                  (println "Stack trace:")
-                                  (.printStackTrace e)
-                                  model)))  ; Return unchanged model on error
-                            pipeline
-                            games)]
-    ;; Final validation
-    (when-not (map? trained-model)
-      (throw (ex-info "Training failed to produce valid model" 
-                     {:model-type (type trained-model)})))
-    trained-model))
+;; Model state
+(def ^:private trained-model (atom nil))
+
+(defn get-trained-model []
+  @trained-model)
+
+(defn set-trained-model [model]
+  (reset! trained-model model))
 
 (defn get-best-move [game-state]
   "Get the best move using the trained model"
-  (let [trained-model (train-model 10)  ; Train on 10 games first
-        result (run-pipeline trained-model game-state :transform)]
-    (when (and (map? result)
-               (seq (get result :policy)))
-      (key (apply max-key val (get result :policy))))))
+  (when (nil? @trained-model)
+    (throw (ex-info "Model not initialized" {})))
+  (let [pipeline @trained-model
+        result (run-pipeline pipeline game-state :transform)
+        policy (:policy result)
+        valid-moves (f/suggested-moves (:board game-state))]
+    (when (seq valid-moves)
+      (apply max-key #(get policy % 0.0) valid-moves))))
+
+(defn self-play-game []
+  "Play a full game using the neural network model"
+  (loop [game-state (f/new-game)
+         moves []
+         history []
+         move-count 0]
+    (if (or (f/game-over? game-state)
+            (>= move-count 49))  ; Maximum possible moves in a 7x7 board
+      {:board (:board game-state)
+       :moves moves
+       :history history
+       :solved? (f/solved? game-state)
+       :moves-made move-count}
+      (let [move (get-best-move game-state)]
+        (if move
+          (let [next-state (f/make-move game-state move)]
+            (recur next-state
+                   (conj moves move)
+                   (conj history {:state game-state
+                                :move move
+                                :result (if (f/solved? next-state) 1.0 0.0)})
+                   (inc move-count)))
+          {:board (:board game-state)
+           :moves moves
+           :history history
+           :solved? (f/solved? game-state)
+           :moves-made move-count})))))
+
+(defn train-on-self-play [n-games]
+  "Train the model through self-play games"
+  (let [pipeline (create-game-pipeline)
+        games (repeatedly n-games self-play-game)
+        trained-model (reduce (fn [model game]
+                              (try
+                                (println "\n=== Training on Self-Play Game ===")
+                                (println "Game result:" (if (:solved? game) "Solved" "Not Solved"))
+                                
+                                ;; Train on each position in the game
+                                (reduce (fn [current-model {:keys [state move result]}]
+                                        (println "Training on state:" state "Type:" (type state))
+                                        (let [result (run-pipeline current-model state :fit)]
+                                          (if (contains? result :layers)
+                                            result
+                                            current-model)))
+                                      model
+                                      (:history game))
+                                
+                                (catch Exception e
+                                  (println "\nError during training:")
+                                  (println "Exception message:" (.getMessage e))
+                                  model)))  ; Return unchanged model on error
+                            pipeline
+                            games)]
+    trained-model))
+
+(defn initialize-model []
+  "Initialize the model through self-play training"
+  (train-on-self-play 100))
+
+(defn retrain-model [num-games]
+  "Retrain the model on new self-play games"
+  (println "Retraining model on" num-games "self-play games...")
+  (set-trained-model (train-on-self-play num-games)))
 
 (defn autoplay-from-position [game-state max-moves]
   "Autoplay from a given position using the neural network model"
-  (loop [state game-state
-         moves-made 0
-         moves []]
-    (if (or (>= moves-made max-moves)
-            (f/game-over? state))
-      {:final-state state
-       :moves-made moves-made
-       :solved? (f/solved? state)
-       :moves moves}
-      (let [move (get-best-move state)]
-        (if move
-          (recur (f/make-move state move)
-                 (inc moves-made)
-                 (conj moves move))
-          {:final-state state
-           :moves-made moves-made
-           :solved? (f/solved? state)
-           :moves moves})))))
+  (f/autoplay-from-position game-state max-moves get-best-move)) 

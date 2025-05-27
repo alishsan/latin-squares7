@@ -16,10 +16,10 @@
                     (s/cat :row ::row-index
                            :col ::col-index
                            :num ::number)))  ;; Strict number validation
+
 ;; ======================
 ;; Core Game Functions
 ;; ======================
-;; In functions.clj
 (defn get-row [board row]
   (into #{} (filter some? (board row))))
 
@@ -28,7 +28,6 @@
 
 (defn new-board [] 
   (vec (repeat 7 (vec (repeat 7 nil)))))
-
 
 (defn valid-number? [num]
   (and (integer? num)
@@ -42,6 +41,124 @@
        (not-any? #(= num %) (get board row))
        (not-any? #(= num %) (map #(get % col) board))))
 
+;; ======================
+;; Game State Management
+;; ======================
+(defrecord GameState [board turn-number])
+
+(defn new-game []
+  {:board (vec (repeat 7 (vec (repeat 7 nil))))
+   :current-player :alice})
+
+(defn current-player [game-state]
+  (:current-player game-state))
+
+(defn make-move [game-state move]
+  (let [board (:board game-state)
+        [row col num] move
+        new-board (assoc-in board [row col] num)
+        new-player (if (= :alice (:current-player game-state))
+                    :bob
+                    :alice)]
+    {:board new-board
+     :current-player new-player}))
+
+(defn valid-game-state? [game-state]
+  (and (instance? GameState game-state)
+       (s/valid? ::board (:board game-state))
+       (integer? (:turn-number game-state))
+       (>= (:turn-number game-state) 0)))
+
+;; ======================
+;; Move Analysis
+;; ======================
+(defn available-numbers [board]
+  {:pre [(s/valid? ::board board)]}
+  (let [used (set (filter some? (flatten board)))]
+    (remove used (range 1 8))))
+
+(defn suggested-moves [board]
+  (for [row (range 7)
+        col (range 7)
+        :when (nil? (get-in board [row col]))
+        num (range 1 8)
+        :when (valid-move? board [row col num])]
+    [row col num]))
+
+(defn solved? [game-state]
+  (let [board (:board game-state)]
+    (every? some? (flatten board))))
+
+(defn game-over? [game-state]
+  (let [board (:board game-state)]
+    (or (every? some? (flatten board))
+        (empty? (suggested-moves board)))))
+
+;; ======================
+;; Move Compression
+;; ======================
+(defn compress-move [[r c n]]
+  (+ (* 1000 r) (* 100 c) n))
+
+(defn decompress-move [move-int]
+  (when move-int
+    [(quot move-int 1000)
+     (quot (mod move-int 1000) 100)
+     (mod move-int 100)]))
+
+;; ======================
+;; Game Play Functions
+;; ======================
+(defn play-game
+  "Play a full game using the provided move selector function"
+  [move-selector]
+  (loop [game-state (new-game)
+         moves []
+         history []
+         move-count 0]
+    (if (or (game-over? game-state)
+            (>= move-count 49))  ; Maximum possible moves in a 7x7 board
+      {:board (:board game-state)
+       :moves moves
+       :history history
+       :solved? (game-over? game-state)
+       :moves-made move-count}
+      (let [move (move-selector game-state)]
+        (if move
+          (let [next-state (make-move game-state move)]
+            (recur next-state
+                   (conj moves move)
+                   (conj history {:state game-state
+                                :move move
+                                :result (if (game-over? next-state) 1.0 0.0)})
+                   (inc move-count)))
+          {:board (:board game-state)
+           :moves moves
+           :history history
+           :solved? (game-over? game-state)
+           :moves-made move-count})))))
+
+(defn autoplay-from-position
+  "Autoplay from a given position using the provided move selector function"
+  [game-state max-moves move-selector]
+  (loop [state game-state
+         moves-made 0
+         moves []]
+    (if (or (>= moves-made max-moves)
+            (game-over? state))
+      {:final-state state
+       :moves-made moves-made
+       :solved? (solved? state)
+       :moves moves}
+      (let [move (move-selector state)]
+        (if move
+          (recur (make-move state move)
+                 (inc moves-made)
+                 (conj moves move))
+          {:final-state state
+           :moves-made moves-made
+           :solved? (solved? state)
+           :moves moves})))))
 
 ;; ======================
 ;; Debugging Utilities
@@ -60,69 +177,6 @@
       (some #{(last move)} (get-col board (second move)))
         (println "- Number exists in column"))))
 
-;; ======================
-;; Game State Management
-;; ======================
-(defrecord GameState [board turn-number])
-
-(defn new-game []
-  {:board (vec (repeat 7 (vec (repeat 7 nil))))
-   :current-player :alice})
-
-(defn current-player [game-state]
-  (:current-player game-state))
-
-
-(defn decompress-move [move-int]
-  [(quot move-int 100)
-   (quot (mod move-int 100) 10)
-   (mod move-int 10)])
-
-(defn make-move [game-state move]
-  (let [board (:board game-state)
-        [row col num] move
-        new-board (assoc-in board [row col] num)
-        new-player (if (= :alice (:current-player game-state))
-                    :bob
-                    :alice)]
-    {:board new-board
-     :current-player new-player}))
-
-
-(defn valid-game-state? [game-state]
-  (and (instance? GameState game-state)
-       (s/valid? ::board (:board game-state))
-       (integer? (:turn-number game-state))
-       (>= (:turn-number game-state) 0)))
-
-;; ======================
-;; Test-Friendly Version
-;; ======================
-(defn make-move* [game-state move]
-  {:pre [(or (nil? game-state) (s/valid? ::board (:board game-state)))
-         (or (nil? move) (s/valid? ::move move))]}
-  (if (and game-state move)
-    (make-move game-state move)
-    game-state))
-
-;; ======================
-;; Move Analysis
-;; ======================
-(defn available-numbers [board]
-  {:pre [(s/valid? ::board board)]}
-  (let [used (set (filter some? (flatten board)))]
-    (remove used (range 1 8))))
-
-
-(defn suggested-moves [board]
-  (for [row (range 7)
-        col (range 7)
-        :when (nil? (get-in board [row col]))
-        num (range 1 8)
-        :when (valid-move? board [row col num])]
-    [row col num]))
-
-
 (defn debug-move-generation [board]
   (println "\n=== DEBUGGING MOVE GENERATION ===")
   (println "Board validation:" (s/valid? ::board board))
@@ -140,16 +194,6 @@
                          (or row-numbers "none")
                          (or col-numbers "none")
                          (seq available)))))))
-
-(defn solved? [game-state]
-  (let [board (:board game-state)]
-    (and (every? some? (flatten board))
-         (every? #(valid-move? board %) (suggested-moves board)))))
-
-(defn game-over? [game-state]
-  (let [board (:board game-state)]
-    (or (every? some? (flatten board))
-        (empty? (suggested-moves board)))))
 
 ;; ======================
 ;; Serialization
@@ -173,5 +217,5 @@
   (doseq [row board]
     (println (map #(or % "_") row))))
 
-(println "Board valid?" (s/valid? ::board (:board (new-game))))
-(println "Suggested moves:" (suggested-moves (:board (new-game))))
+;; (println "Board valid?" (s/valid? ::board (:board (new-game))))
+;; (println "Suggested moves:" (suggested-moves (:board (new-game))))
