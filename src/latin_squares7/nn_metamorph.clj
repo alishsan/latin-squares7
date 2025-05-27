@@ -150,25 +150,20 @@
 (defn compress-move [[r c n]]
   (+ (* 1000 r) (* 100 c) n))
 
-;; Neural Network Pipeline Components
-(defn board->features-pipe
-  "Convert board state to feature tensor"
-  []
-  (fn [{:metamorph/keys [data mode] :as ctx}]
-    (let [board-data (cond
-                      (map? data) (if (contains? data :board)
-                                   (:board data)
-                                   (throw (ex-info "Game state map missing :board key" 
-                                                 {:keys (keys data)})))
-                      (vector? data) data
-                      :else (throw (ex-info "Invalid input data type" 
-                                          {:type (type data)
-                                           :mode mode})))
-          flattened-data (vec (map #(if (nil? %) 0.0 %) 
-                                  (flatten board-data)))
-          features (debug-tensor "features" (ensure-2d-tensor (vec (take 49 flattened-data))))]
+(defn board->features [board]
+  "Convert a 7x7 board into a feature vector for the neural network"
+  (let [flattened (flatten board)]
+    (tensor/->tensor
+     (mapv #(if (nil? %) 0.0 %) flattened))))
+
+(defn board->features-pipe []
+  "Convert board state to feature vector"
+  (fn [{:metamorph/keys [data] :as ctx}]
+    (let [board (:board data)
+          features (board->features board)]
       (assoc ctx :metamorph/data features))))
 
+;; Neural Network Pipeline Components
 (defn create-layer-pipe
   "Create neural network layers with weights and biases"
   []
@@ -407,4 +402,52 @@
 
 (defn autoplay-from-position [game-state max-moves]
   "Autoplay from a given position using the neural network model"
-  (f/autoplay-from-position game-state max-moves get-best-move)) 
+  (f/autoplay-from-position game-state max-moves get-best-move))
+
+(defn train-on-batch [model batch-data]
+  "Train the model on a batch of positions"
+  (let [learning-rate 0.01
+        batch-size (count batch-data)
+        inputs (map :input batch-data)
+        policy-targets (map :policy-target batch-data)
+        value-targets (map :value-target batch-data)
+        forward-results (map #(run-pipeline model {:board %} :transform) inputs)
+        policy-losses (map (fn [result target]
+                           (let [pred-policy (:policy result)
+                                 target-policy target
+                                 valid-moves (keys target-policy)
+                                 pred-probs (map #(get pred-policy % 0.0) valid-moves)
+                                 target-probs (map #(get target-policy %) valid-moves)]
+                             (- (reduce + (map (fn [p t] (- (* t (Math/log (max p 1e-10)))))
+                                             pred-probs target-probs)))))
+                         forward-results policy-targets)
+        value-losses (map (fn [result target]
+                          (let [pred-value (:value result)]
+                            (Math/pow (- pred-value target) 2)))
+                        forward-results value-targets)
+        avg-policy-loss (/ (reduce + policy-losses) batch-size)
+        avg-value-loss (/ (reduce + value-losses) batch-size)
+        update-layer (fn [layer]
+                      {:weights (tensor-add (:weights layer)
+                                          (tensor/->tensor
+                                           (mapv (fn [row]
+                                                 (mapv #(* (- learning-rate) %) row))
+                                               (seq (:weights layer)))))
+                       :biases (tensor-add (:biases layer)
+                                         (tensor/->tensor
+                                          (mapv (fn [bias]
+                                                (* (- learning-rate) bias))
+                                              (flatten (seq (:biases layer))))))})
+        updated-model (reduce (fn [current-model [input _ _]]
+                              (let [result (run-pipeline current-model {:board input} :fit)
+                                    layers (:layers result)
+                                    updated-layers (into {} (map (fn [[name layer]]
+                                                                [name (update-layer layer)])
+                                                              layers))]
+                                (assoc result :layers updated-layers)))
+                            model
+                            (map vector inputs policy-targets value-targets))]
+    (println "Training batch stats:")
+    (println "Average policy loss:" avg-policy-loss)
+    (println "Average value loss:" avg-value-loss)
+    updated-model)) 
