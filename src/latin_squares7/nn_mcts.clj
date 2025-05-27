@@ -6,6 +6,7 @@
 (defn get-best-move
   "Get the best move using neural network guided MCTS"
   [state]
+  (println "get-best-move called with game-state:" state "Type:" (type state) "Current player:" (:current-player state))
   (let [model (nn/get-trained-model)
         predictions (if model
                      (nn/run-pipeline model state :transform)

@@ -121,7 +121,7 @@
       {:board (:board game-state)
        :moves moves
        :history history
-       :solved? (game-over? game-state)
+       :game-over? (game-over? game-state)
        :moves-made move-count}
       (let [move (move-selector game-state)]
         (if move
@@ -135,7 +135,7 @@
           {:board (:board game-state)
            :moves moves
            :history history
-           :solved? (game-over? game-state)
+           :game-over? (game-over? game-state)
            :moves-made move-count})))))
 
 (defn autoplay-from-position
@@ -148,7 +148,7 @@
             (game-over? state))
       {:final-state state
        :moves-made moves-made
-       :solved? (solved? state)
+       :game-over? (game-over? state)
        :moves moves}
       (let [move (move-selector state)]
         (if move
@@ -157,7 +157,7 @@
                  (conj moves move))
           {:final-state state
            :moves-made moves-made
-           :solved? (solved? state)
+           :game-over? (game-over? state)
            :moves moves})))))
 
 ;; ======================
