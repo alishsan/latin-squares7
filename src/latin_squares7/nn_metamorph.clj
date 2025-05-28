@@ -8,7 +8,8 @@
             [scicloj.metamorph.ml :as ml]
             [fastmath.core :as fm]
             [fastmath.vector :as fv]
-            [fastmath.matrix :as fmx])
+            [fastmath.matrix :as fmx]
+            [latin-squares7.mcts :as mcts])
   (:import [org.apache.commons.math3.linear Array2DRowRealMatrix RealMatrix]))
 
 ;; Helper Functions
@@ -256,7 +257,11 @@
           value (sigmoid (first (flatten (seq value-out-with-bias))))]
       
       (assoc ctx :metamorph/data
-             {:policy (zipmap (range 343) policy-probs)  ; Map move indices to probabilities
+             {:policy (zipmap (map f/compress-move (for [r (range 7)
+                                                       c (range 7)
+                                                       n (range 1 8)]
+                                                   [r c n]))
+                            policy-probs)  ; Map compressed move integers to probabilities
               :value value}))))
 
 (defn predict-pipe
@@ -286,9 +291,10 @@
                               scaled-probs (map #(/ % max-prob) valid-probs)
                               total-prob (reduce + scaled-probs)]
                           (if (pos? total-prob)
-                            (zipmap moves
+                            (zipmap (map f/compress-move moves)  ; Convert move vectors to integers
                                    (map #(/ % total-prob) scaled-probs))
-                            (zipmap moves (repeat (/ 1.0 (count moves)))))))]
+                            (zipmap (map f/compress-move moves)  ; Convert move vectors to integers
+                                   (repeat (/ 1.0 (count moves)))))))]
       
       (assoc ctx :metamorph/data
              {:policy (or valid-policy {})
@@ -325,6 +331,32 @@
 (defn set-trained-model [model]
   (reset! trained-model model))
 
+(defn save-model [model path]
+  "Save the trained model to a file"
+  (try
+    (let [model-data {:layers (into {} (map (fn [[name layer]]
+                                             [name {:weights (vec (map vec (seq (:weights layer))))
+                                                   :biases (vec (flatten (seq (:biases layer))))}])
+                                           (:layers model)))}]
+      (spit path (pr-str model-data))
+      (println "Model saved successfully to" path))
+    (catch Exception e
+      (println "Error saving model:" (.getMessage e)))))
+
+(defn load-model [path]
+  "Load a trained model from a file"
+  (try
+    (let [model-data (read-string (slurp path))
+          layers (into {} (map (fn [[name layer]]
+                               [name {:weights (tensor/->tensor (:weights layer))
+                                     :biases (tensor/->tensor (:biases layer))}])
+                             (:layers model-data)))]
+      (println "Model loaded successfully from" path)
+      (create-game-pipeline))  ; Create a new pipeline with the loaded weights
+    (catch Exception e
+      (println "Error loading model:" (.getMessage e))
+      nil)))
+
 (defn get-best-move [game-state]
   "Get the best move using the trained model"
   (when (nil? @trained-model)
@@ -337,68 +369,148 @@
       (apply max-key #(get policy % 0.0) valid-moves))))
 
 (defn self-play-game []
-  "Play a full game using the neural network model"
-  (loop [game-state (f/new-game)
-         moves []
-         history []
-         move-count 0]
-    (if (or (f/game-over? game-state)
-            (>= move-count 49))  ; Maximum possible moves in a 7x7 board
-      {:board (:board game-state)
-       :moves moves
-       :history history
-       :solved? (f/solved? game-state)
-       :moves-made move-count}
-      (let [move (get-best-move game-state)]
-        (if move
-          (let [next-state (f/make-move game-state move)]
-            (recur next-state
-                   (conj moves move)
-                   (conj history {:state game-state
-                                :move move
-                                :result (if (f/solved? next-state) 1.0 0.0)})
-                   (inc move-count)))
-          {:board (:board game-state)
+  "Play a full game using MCTS and store (state, policy, value) tuples"
+  (let [initial-state (f/new-game)
+        game-history (atom [])]
+    (loop [state initial-state
+           moves []
+           move-count 0]
+      (if (or (f/game-over? state)
+              (>= move-count 49))  ; Maximum possible moves in a 7x7 board
+        (let [winner (if (= (:current-player state) :alice) :bob :alice)
+              z (if (= winner :alice) 1 -1)]  ; 1 for alice win, -1 for bob win
+          ;; Update all history entries with the final z value
+          (doseq [entry @game-history]
+            (swap! game-history update-in [(.indexOf @game-history entry)] assoc :z z))
+          {:board (:board state)
            :moves moves
-           :history history
-           :solved? (f/solved? game-state)
-           :moves-made move-count})))))
+           :history @game-history
+           :winner winner
+           :moves-made move-count})
+        (let [mcts-result (mcts/mcts state 500 nil)  ; Run MCTS to get policy
+              policy (into {} (map-indexed (fn [i v] [i v]) 
+                                         (map #(get mcts-result % 0) 
+                                              (range 343))))  ; 7x7x7 possible moves
+              move (first (sort-by val > policy))  ; Select best move
+              next-state (f/make-move state move)]
+          (swap! game-history conj {:state state
+                                  :policy policy
+                                  :z nil})  ; z will be filled at game end
+          (recur next-state (conj moves move) (inc move-count)))))))
 
 (defn train-on-self-play [n-games]
-  "Train the model through self-play games"
+  "Train the model through self-play games using AlphaGo-style training"
   (let [pipeline (create-game-pipeline)
         games (repeatedly n-games self-play-game)
-        trained-model (reduce (fn [model game]
-                              (try
-                                (println "\n=== Training on Self-Play Game ===")
-                                (println "Game result:" (if (:solved? game) "Solved" "Not Solved"))
-                                
-                                ;; Train on each position in the game
-                                (reduce (fn [current-model {:keys [state move result]}]
-                                        (println "Training on state:" state "Type:" (type state))
-                                        (let [result (run-pipeline current-model state :fit)]
-                                          (if (contains? result :layers)
-                                            result
-                                            current-model)))
-                                      model
-                                      (:history game))
-                                
-                                (catch Exception e
-                                  (println "\nError during training:")
-                                  (println "Exception message:" (.getMessage e))
-                                  model)))  ; Return unchanged model on error
-                            pipeline
-                            games)]
-    trained-model))
+        learning-rate 0.01
+        c 0.0001]  ; L2 regularization constant
+    
+    (defn train-on-position [current-model {:keys [state policy z]}]
+      (let [predictions (run-pipeline current-model state :transform)
+            p (:policy predictions)
+            v (:value predictions)
+            value-loss (Math/pow (- z v) 2)
+            policy-loss (let [valid-actions (filter #(and (get p %)
+                                                         (get policy %))
+                                                  (keys p))]
+                       (if (empty? valid-actions)
+                         0.0  ; No valid actions, no policy loss
+                         (- (reduce + (map (fn [action]
+                                            (let [pred-prob (get p action 0.0)
+                                                  target-prob (get policy action 0.0)]
+                                              (* target-prob
+                                                 (Math/log (max pred-prob 1e-10)))))
+                                          valid-actions)))))
+            l2-loss (* c (reduce + (map #(Math/pow % 2)
+                                     (flatten (map :weights (vals (:layers current-model)))))))
+            total-loss (+ value-loss policy-loss l2-loss)]
+        
+        ;; Debug logging
+        (println "\nTraining on position:")
+        (println "  State:" state)
+        (println "  Policy size:" (count policy))
+        (println "  Value prediction:" v)
+        (println "  Z value:" z)
+        
+        ;; Policy debug
+        (println "\nPolicy debug:")
+        (println "  Policy keys:" (keys p))
+        (println "  Policy values:" (vals p))
+        (println "  Target policy keys:" (keys policy))
+        (println "  Target policy values:" (vals policy))
+        
+        ;; Validate policy
+        (when (or (nil? p) (empty? p))
+          (throw (ex-info "Invalid policy predictions" 
+                        {:predictions predictions
+                         :policy p})))
+        
+        ;; Loss debug
+        (println "\nLosses:")
+        (println "    Value loss:" value-loss)
+        (println "    Policy loss:" policy-loss)
+        (println "    L2 loss:" l2-loss)
+        (println "    Total loss:" total-loss)
+        
+        ;; Update model weights using gradient descent
+        (let [updated-model (reduce (fn [m layer-name]
+                                    (let [layer (get-in m [:layers layer-name])
+                                          weights (:weights layer)
+                                          biases (:biases layer)]
+                                      (when (and weights biases)  ; Only update if both exist
+                                        (let [;; Simple gradient update
+                                              updated-weights (tensor-add weights
+                                                                         (tensor/->tensor
+                                                                          (mapv (fn [row]
+                                                                                 (mapv #(* (- learning-rate) %) row))
+                                                                               (seq weights))))
+                                              updated-biases (tensor-add biases
+                                                                        (tensor/->tensor
+                                                                         (mapv (fn [bias]
+                                                                                (* (- learning-rate) bias))
+                                                                              (flatten (seq biases)))))]
+                                          (assoc-in m [:layers layer-name]
+                                                   {:weights updated-weights
+                                                    :biases updated-biases})))))
+                                  current-model
+                                  [:policy :value])]
+          (or updated-model current-model))))  ; Return current model if update failed
+    
+    (defn train-on-game [model game]
+      (try
+        (println "\n=== Training on Self-Play Game ===")
+        (println "Game result:" (if (= (:winner game) :alice) "Alice won" "Bob won"))
+        (reduce train-on-position model (:history game))
+        (catch Exception e
+          (println "\nError during training:")
+          (println "Exception message:" (.getMessage e))
+          (println "Stack trace:")
+          (.printStackTrace e)
+          model)))  ; Return unchanged model on error
+    
+    (reduce train-on-game pipeline games)))
 
 (defn initialize-model []
   "Initialize the model through self-play training"
   (train-on-self-play 100))
 
-(defn retrain-model [num-games]
-  "Retrain the model on new self-play games"
+(defn retrain-model [num-games & {:keys [load-path save-path]}]
+  "Retrain the model on new self-play games.
+   Options:
+   - load-path: Path to load a previous model from
+   - save-path: Path to save the trained model to"
   (println "Retraining model on" num-games "self-play games...")
-  (set-trained-model (train-on-self-play num-games)))
+  (let [initial-model (if load-path
+                       (do
+                         (println "Loading previous model from" load-path)
+                         (load-model load-path))
+                       (create-game-pipeline))
+        trained-model (train-on-self-play num-games)]
+    (when save-path
+      (println "Saving trained model to" save-path)
+      (save-model trained-model save-path))
+    (set-trained-model trained-model)
+    trained-model))
 
 (defn autoplay-from-position [game-state max-moves]
   "Autoplay from a given position using the neural network model"
@@ -450,4 +562,4 @@
     (println "Training batch stats:")
     (println "Average policy loss:" avg-policy-loss)
     (println "Average value loss:" avg-value-loss)
-    updated-model)) 
+    updated-model))

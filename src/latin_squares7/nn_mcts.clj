@@ -81,8 +81,8 @@
         final-state (:final-state result)
         winner (when (:game-over? result)
                 (if (= (:current-player final-state) :alice)
-                  :bob  ; If it's alice's turn and game is over, bob won
-                  :alice))]  ; If it's bob's turn and game is over, alice won
+                  :bob  ; If it's alice's turn and game is over, bob made the last move
+                  :alice))]  ; If it's bob's turn and game is over, alice made the last move
     (println "\n=== Game Summary ===")
     (println "Final board state:")
     (f/print-board (:board final-state))
@@ -90,11 +90,11 @@
     (println "Moves made:" (:moves-made result))
     (println "Game over:" (:game-over? result))
     (when winner
-      (println "Winner:" (name winner)))
+      (println "Winner:" (name winner) "(made the last move)"))
     (println "\nMove history:")
     (doseq [[i move] (map-indexed vector (:moves result))]
       (println (format "Move %d: %s" (inc i) move)))
-    result))
+    (assoc result :winner winner)))
 
 (defn get-random-move [game-state]
   "Get a random valid move from the current position"
@@ -177,4 +177,105 @@
                         (:moves result))))
       {:neural-rating @neural-rating
        :random-rating @random-rating
-       :results results}))) 
+       :results results})))
+
+(defn self-play-game
+  "Play a game using MCTS and store (state, policy, value) tuples"
+  []
+  (let [initial-state (f/new-game)
+        game-history (atom [])]
+    (loop [state initial-state
+           moves []]
+      (if (f/game-over? state)
+        (let [winner (if (= (:current-player state) :alice) :bob :alice)
+              z (if (= winner :alice) 1 -1)]  ; 1 for alice win, -1 for bob win
+          {:history @game-history
+           :winner winner
+           :moves moves})
+        (let [mcts-result (mcts/mcts state 500 nil)  ; Run MCTS to get policy
+              policy (into {} (map-indexed (fn [i v] [i v]) 
+                                         (map #(get mcts-result % 0) 
+                                              (range 343))))  ; 7x7x7 possible moves
+              move (first (sort-by val > policy))  ; Select best move
+              next-state (f/make-move state move)]
+          (swap! game-history conj {:state state
+                                  :policy policy
+                                  :z nil})  ; z will be filled at game end
+          (recur next-state (conj moves move)))))))
+
+(defn train-on-self-play-data
+  "Train the neural network on self-play data using the specified loss function"
+  [model game-histories]
+  (let [learning-rate 0.01
+        c 0.0001  ; L2 regularization constant
+        states (mapcat #(map :state %) game-histories)
+        policies (mapcat #(map :policy %) game-histories)
+        values (mapcat #(map :z %) game-histories)]
+    (reduce (fn [current-model [state policy z]]
+              (let [predictions (nn/run-pipeline current-model state :transform)
+                    p (:policy predictions)
+                    v (:value predictions)
+                    
+                    ;; Value loss: (z-v)²
+                    value-loss (Math/pow (- z v) 2)
+                    
+                    ;; Policy loss: -πᵀlog(p)
+                    policy-loss (- (reduce + (map (fn [[action prob]]
+                                                   (* (get policy action 0)
+                                                      (Math/log (max (get p action) 1e-10))))
+                                                 (keys p))))
+                    
+                    ;; L2 regularization: c||θ||²
+                    l2-loss (* c (reduce + (map #(Math/pow % 2)
+                                              (flatten (map :weights (vals (:layers current-model)))))))
+                    
+                    ;; Total loss
+                    total-loss (+ value-loss policy-loss l2-loss)]
+                
+                ;; Update model weights using gradient descent
+                (let [updated-model (reduce (fn [m layer-name]
+                                            (let [layer (get-in m [:layers layer-name])
+                                                  weights (:weights layer)
+                                                  biases (:biases layer)
+                                                  ;; Simple gradient update
+                                                  updated-weights (nn/tensor-add weights
+                                                                               (tensor/->tensor
+                                                                                (mapv (fn [row]
+                                                                                       (mapv #(* (- learning-rate) %) row))
+                                                                                     (seq weights))))
+                                                  updated-biases (nn/tensor-add biases
+                                                                              (tensor/->tensor
+                                                                               (mapv (fn [bias]
+                                                                                      (* (- learning-rate) bias))
+                                                                                    (flatten (seq biases)))))]
+                                              (assoc-in m [:layers layer-name]
+                                                      {:weights updated-weights
+                                                       :biases updated-biases})))
+                                          current-model
+                                          [:policy :value])]
+                  updated-model)))
+            model
+            (map vector states policies values))))
+
+(defn train-cycle
+  "Complete training cycle: self-play -> training -> evaluation"
+  [n-games]
+  (println "\n=== Starting Training Cycle ===")
+  (println "Games to play:" n-games)
+  
+  ;; Self-play phase
+  (println "\nCollecting self-play data...")
+  (let [game-histories (doall (repeatedly n-games self-play-game))
+        model (or @current-model (nn/create-game-pipeline))]
+    
+    ;; Training phase
+    (println "\nTraining network...")
+    (let [trained-model (train-on-self-play-data model game-histories)]
+      (reset! current-model trained-model))
+    
+    ;; Evaluation phase
+    (println "\nEvaluating new model...")
+    (evaluate-strength 10)  ; Evaluate against random play
+    
+    {:games-played n-games
+     :model @current-model})) 
