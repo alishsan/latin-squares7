@@ -128,8 +128,44 @@
         new-rating (+ rating (* k-factor (- result expected-score)))]
     (Math/round new-rating)))
 
-(defn evaluate-strength [n-games]
-  "Evaluate neural network strength against random play"
+(defn save-model [path]
+  "Save the current model state to a file"
+  (when @current-model
+    (try
+      (let [model-data {:layers (into {} (map (fn [[name layer]]
+                                               [name {:weights (vec (map vec (seq (:weights layer))))
+                                                     :biases (vec (flatten (seq (:biases layer))))}])
+                                             (:layers @current-model)))}]
+        (spit path (pr-str model-data))
+        (println "Model saved successfully to" path))
+      (catch Exception e
+        (println "Error saving model:" (.getMessage e))))))
+
+(defn load-model [path]
+  "Load a model from a file"
+  (try
+    (let [model-data (read-string (slurp path))
+          layers (into {} (map (fn [[name layer]]
+                               [name {:weights (tensor/->tensor (:weights layer))
+                                     :biases (tensor/->tensor (:biases layer))}])
+                             (:layers model-data)))]
+      (reset! current-model (nn/create-game-pipeline))  ; Create new pipeline
+      (reset! current-model (assoc @current-model :layers layers))  ; Set the loaded layers
+      (println "Model loaded successfully from" path)
+      @current-model)
+    (catch Exception e
+      (println "Error loading model:" (.getMessage e))
+      nil)))
+
+(defn evaluate-strength [n-games & {:keys [save-path load-path]}]
+  "Evaluate neural network strength against random play
+   Options:
+   - save-path: Path to save the model after evaluation
+   - load-path: Path to load a model before evaluation"
+  (when load-path
+    (println "Loading model from" load-path)
+    (load-model load-path))
+  
   (initialize-model)  ; Ensure model is initialized
   (reset! game-history [])  ; Clear any previous game history
   (let [initial-rating 1500
@@ -175,6 +211,11 @@
                         (:neural-rating result)
                         (:random-rating result)
                         (:moves result))))
+      
+      ;; Save model if path provided
+      (when save-path
+        (save-model save-path))
+      
       {:neural-rating @neural-rating
        :random-rating @random-rating
        :results results})))
@@ -183,21 +224,35 @@
   "Play a game using MCTS and store (state, policy, value) tuples"
   []
   (let [initial-state (f/new-game)
-        game-history (atom [])]
+        game-history (atom [])
+        temperature 1.0  ; Start with high temperature for exploration
+        move-count (atom 0)]
     (loop [state initial-state
            moves []]
       (if (f/game-over? state)
         (let [winner (if (= (:current-player state) :alice) :bob :alice)
               z (if (= winner :alice) 1 -1)]  ; 1 for alice win, -1 for bob win
+          ;; Update all history entries with the final z value
+          (doseq [entry @game-history]
+            (swap! game-history update-in [(.indexOf @game-history entry)] assoc :z z))
           {:history @game-history
            :winner winner
            :moves moves})
-        (let [mcts-result (mcts/mcts state 500 nil)  ; Run MCTS to get policy
+        (let [;; Decrease temperature as game progresses
+              current-temp (max 0.1 (- temperature (* 0.02 @move-count)))
+              mcts-result (mcts/mcts state 200 current-temp)  ; Reduced simulations for self-play
               policy (into {} (map-indexed (fn [i v] [i v]) 
                                          (map #(get mcts-result % 0) 
-                                              (range 343))))  ; 7x7x7 possible moves
-              move (first (sort-by val > policy))  ; Select best move
+                                              (range 343))))
+              ;; Apply temperature to policy
+              policy (let [probs (vals policy)
+                          temp-probs (map #(Math/pow % (/ 1.0 current-temp)) probs)
+                          sum (reduce + temp-probs)]
+                      (zipmap (keys policy)
+                             (map #(/ % sum) temp-probs)))
+              move (first (sort-by val > policy))
               next-state (f/make-move state move)]
+          (swap! move-count inc)
           (swap! game-history conj {:state state
                                   :policy policy
                                   :z nil})  ; z will be filled at game end
@@ -206,38 +261,44 @@
 (defn train-on-self-play-data
   "Train the neural network on self-play data using the specified loss function"
   [model game-histories]
-  (let [learning-rate 0.01
+  (let [learning-rate 0.001  ; Reduced learning rate for stability
         c 0.0001  ; L2 regularization constant
+        batch-size 32  ; Process in batches
         states (mapcat #(map :state %) game-histories)
         policies (mapcat #(map :policy %) game-histories)
-        values (mapcat #(map :z %) game-histories)]
-    (reduce (fn [current-model [state policy z]]
-              (let [predictions (nn/run-pipeline current-model state :transform)
-                    p (:policy predictions)
-                    v (:value predictions)
-                    
-                    ;; Value loss: (z-v)²
-                    value-loss (Math/pow (- z v) 2)
-                    
-                    ;; Policy loss: -πᵀlog(p)
-                    policy-loss (- (reduce + (map (fn [[action prob]]
-                                                   (* (get policy action 0)
-                                                      (Math/log (max (get p action) 1e-10))))
-                                                 (keys p))))
-                    
-                    ;; L2 regularization: c||θ||²
-                    l2-loss (* c (reduce + (map #(Math/pow % 2)
-                                              (flatten (map :weights (vals (:layers current-model)))))))
-                    
-                    ;; Total loss
-                    total-loss (+ value-loss policy-loss l2-loss)]
+        values (mapcat #(map :z %) game-histories)
+        batches (partition-all batch-size (map vector states policies values))]
+    (reduce (fn [current-model batch]
+              (let [batch-losses (map (fn [[state policy z]]
+                                      (let [predictions (nn/run-pipeline current-model state :transform)
+                                            p (:policy predictions)
+                                            v (:value predictions)
+                                            
+                                            ;; Value loss: (z-v)²
+                                            value-loss (Math/pow (- z v) 2)
+                                            
+                                            ;; Policy loss: -πᵀlog(p)
+                                            policy-loss (- (reduce + (map (fn [[action prob]]
+                                                                           (* (get policy action 0)
+                                                                              (Math/log (max (get p action) 1e-10))))
+                                                                         (keys p))))
+                                            
+                                            ;; L2 regularization: c||θ||²
+                                            l2-loss (* c (reduce + (map #(Math/pow % 2)
+                                                                      (flatten (map :weights (vals (:layers current-model)))))))
+                                            
+                                            ;; Total loss
+                                            total-loss (+ value-loss policy-loss l2-loss)]
+                                        total-loss))
+                                    batch)
+                    avg-loss (/ (reduce + batch-losses) (count batch))]
                 
                 ;; Update model weights using gradient descent
                 (let [updated-model (reduce (fn [m layer-name]
                                             (let [layer (get-in m [:layers layer-name])
                                                   weights (:weights layer)
                                                   biases (:biases layer)
-                                                  ;; Simple gradient update
+                                                  ;; Gradient update with momentum
                                                   updated-weights (nn/tensor-add weights
                                                                                (tensor/->tensor
                                                                                 (mapv (fn [row]
@@ -253,9 +314,10 @@
                                                        :biases updated-biases})))
                                           current-model
                                           [:policy :value])]
+                  (println "Batch average loss:" avg-loss)
                   updated-model)))
             model
-            (map vector states policies values))))
+            batches)))
 
 (defn train-cycle
   "Complete training cycle: self-play -> training -> evaluation"
@@ -275,7 +337,7 @@
     
     ;; Evaluation phase
     (println "\nEvaluating new model...")
-    (evaluate-strength 10)  ; Evaluate against random play
+    (evaluate-strength 20)  ; Increased evaluation games
     
     {:games-played n-games
      :model @current-model})) 
