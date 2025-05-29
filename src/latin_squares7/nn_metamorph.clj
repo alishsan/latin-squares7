@@ -8,9 +8,7 @@
             [scicloj.metamorph.ml :as ml]
             [fastmath.core :as fm]
             [fastmath.vector :as fv]
-            [fastmath.matrix :as fmx]
-            [latin-squares7.mcts :as mcts])
-  (:import [org.apache.commons.math3.linear Array2DRowRealMatrix RealMatrix]))
+            [fastmath.matrix :as fmx]))
 
 ;; Helper Functions
 (defn random-weight [input-size output-size]
@@ -149,7 +147,13 @@
              (seq b))))))
 
 (defn compress-move [[r c n]]
-  (+ (* 1000 r) (* 100 c) n))
+  (+ (* 100 r) (* 10 c) n))
+
+(defn decompress-move [move-int]
+  (when move-int
+    [(quot move-int 100)
+     (quot (mod move-int 100) 10)
+     (mod move-int 10)]))
 
 (defn board->features [board]
   "Convert a 7x7 board into a feature vector for the neural network"
@@ -274,26 +278,30 @@
                                      {:data-type (type data)})))
           game-state (:metamorph/data (get-in ctx [:metamorph/context :original-data]))
           moves (f/suggested-moves (:board game-state))
-          move-keys (map f/compress-move moves)
+          move-keys (map f/compress-move moves)  ; Use the same compression as functions.clj
           policy-logits (vec (flatten (seq (get predictions :policy))))
           policy-probs (vec (softmax policy-logits))  ; Ensure policy-probs is a vector
           value (get predictions :value)
           
           ;; Filter policy to only include valid moves and normalize
           valid-policy (when (and (seq moves) (seq policy-probs))
-                        (let [move-probs (map (fn [key]
-                                              (when (< key (count policy-probs))
-                                                (nth policy-probs key)))
-                                            move-keys)
+                        (let [move-probs (map (fn [move]
+                                              (let [compressed (f/compress-move move)
+                                                    idx (+ (* 7 (first move))
+                                                         (* 49 (second move))
+                                                         (dec (nth move 2)))]
+                                                (when (< idx (count policy-probs))
+                                                  (nth policy-probs idx))))
+                                            moves)
                               valid-probs (remove nil? move-probs)
                               max-prob (apply max valid-probs)
                               ;; Scale probabilities to be more reasonable
                               scaled-probs (map #(/ % max-prob) valid-probs)
                               total-prob (reduce + scaled-probs)]
                           (if (pos? total-prob)
-                            (zipmap (map f/compress-move moves)  ; Convert move vectors to integers
+                            (zipmap moves  ; Use move vectors directly as keys
                                    (map #(/ % total-prob) scaled-probs))
-                            (zipmap (map f/compress-move moves)  ; Convert move vectors to integers
+                            (zipmap moves  ; Use move vectors directly as keys
                                    (repeat (/ 1.0 (count moves)))))))]
       
       (assoc ctx :metamorph/data
@@ -369,7 +377,7 @@
       (apply max-key #(get policy % 0.0) valid-moves))))
 
 (defn self-play-game []
-  "Play a full game using MCTS and store (state, policy, value) tuples"
+  "Play a full game using pure neural network and store (state, policy, value) tuples"
   (let [initial-state (f/new-game)
         game-history (atom [])]
     (loop [state initial-state
@@ -387,10 +395,8 @@
            :history @game-history
            :winner winner
            :moves-made move-count})
-        (let [mcts-result (mcts/mcts state 500 nil)  ; Run MCTS to get policy
-              policy (into {} (map-indexed (fn [i v] [i v]) 
-                                         (map #(get mcts-result % 0) 
-                                              (range 343))))  ; 7x7x7 possible moves
+        (let [predictions (run-pipeline @trained-model state :transform)
+              policy (:policy predictions)
               move (first (sort-by val > policy))  ; Select best move
               next-state (f/make-move state move)]
           (swap! game-history conj {:state state
