@@ -132,29 +132,42 @@
   "Save the current model state to a file"
   (when @current-model
     (try
-      (let [model-data {:layers (into {} (map (fn [[name layer]]
-                                               [name {:weights (vec (map vec (seq (:weights layer))))
-                                                     :biases (vec (flatten (seq (:biases layer))))}])
-                                             (:layers @current-model)))}]
-        (spit path (pr-str model-data))
-        (println "Model saved successfully to" path))
-      (catch Exception e
-        (println "Error saving model:" (.getMessage e))))))
+      (let [model-data (if (fn? @current-model)
+                         ;; If it's a pipeline function, get the layers from the last run
+                         (let [test-state (f/new-game)
+                               result (nn/run-pipeline @current-model test-state :fit)]
+                           {:layers (:layers result)})
+                         ;; If it's already a model with layers
+                         {:layers (:layers @current-model)})]
+        (when (seq (:layers model-data))  ; Only save if we have layers
+          (spit path (pr-str model-data))
+          (println "Model saved successfully to" path)
+          (println "Model layers:" (keys (:layers model-data)))))
+      (catch Throwable t
+        (println "Error saving model:" (.getMessage t))
+        (println "Model state:" (pr-str @current-model))))))
 
 (defn load-model [path]
   "Load a model from a file"
   (try
     (let [model-data (read-string (slurp path))
-          layers (into {} (map (fn [[name layer]]
-                               [name {:weights (tensor/->tensor (:weights layer))
-                                     :biases (tensor/->tensor (:biases layer))}])
-                             (:layers model-data)))]
-      (reset! current-model (nn/create-game-pipeline))  ; Create new pipeline
-      (reset! current-model (assoc @current-model :layers layers))  ; Set the loaded layers
-      (println "Model loaded successfully from" path)
-      @current-model)
-    (catch Exception e
-      (println "Error loading model:" (.getMessage e))
+          layers (:layers model-data)]
+      (when (seq layers)  ; Only load if we have layers
+        (let [pipeline (nn/create-game-pipeline)
+              test-state (f/new-game)
+              result (nn/run-pipeline pipeline test-state :fit)
+              updated-result (assoc result :layers layers)
+              new-pipeline (fn [state mode]
+                           (if (= mode :fit)
+                             updated-result
+                             (nn/run-pipeline updated-result state :transform)))]
+          (reset! current-model new-pipeline)
+          (println "Model loaded successfully from" path)
+          (println "Loaded layers:" (keys layers))
+          @current-model)))
+    (catch Throwable t
+      (println "Error loading model:" (.getMessage t))
+      (println "Model data:" (pr-str (try (read-string (slurp path)) (catch Throwable _ nil))))
       nil)))
 
 (defn evaluate-strength [n-games & {:keys [save-path load-path]}]
@@ -261,15 +274,23 @@
 (defn train-on-self-play-data
   "Train the neural network on self-play data using the specified loss function"
   [model game-histories]
-  (let [learning-rate 0.001  ; Reduced learning rate for stability
+  (let [initial-learning-rate 0.01  ; Start with higher learning rate
+        min-learning-rate 0.001     ; Don't go below this
         c 0.0001  ; L2 regularization constant
         batch-size 32  ; Process in batches
         states (mapcat #(map :state %) game-histories)
         policies (mapcat #(map :policy %) game-histories)
         values (mapcat #(map :z %) game-histories)
-        batches (partition-all batch-size (map vector states policies values))]
-    (reduce (fn [current-model batch]
-              (let [batch-losses (map (fn [[state policy z]]
+        batches (partition-all batch-size (map vector states policies values))
+        total-batches (count batches)]
+    
+    (reduce (fn [[current-model batch-num] batch]
+              (let [;; Decay learning rate
+                    learning-rate (max min-learning-rate
+                                     (* initial-learning-rate 
+                                        (Math/pow 0.95 batch-num)))
+                    
+                    batch-losses (map (fn [[state policy z]]
                                       (let [predictions (nn/run-pipeline current-model state :transform)
                                             p (:policy predictions)
                                             v (:value predictions)
@@ -291,53 +312,92 @@
                                             total-loss (+ value-loss policy-loss l2-loss)]
                                         total-loss))
                                     batch)
-                    avg-loss (/ (reduce + batch-losses) (count batch))]
+                    avg-loss (/ (reduce + batch-losses) (count batch))
+                    
+                    ;; Update model weights using gradient descent with momentum
+                    updated-model (reduce (fn [m layer-name]
+                                          (let [layer (get-in m [:layers layer-name])
+                                                weights (:weights layer)
+                                                biases (:biases layer)
+                                                ;; Gradient update with momentum
+                                                updated-weights (nn/tensor-add weights
+                                                                             (tensor/->tensor
+                                                                              (mapv (fn [row]
+                                                                                     (mapv #(* (- learning-rate) %) row))
+                                                                                   (seq weights))))
+                                                updated-biases (nn/tensor-add biases
+                                                                            (tensor/->tensor
+                                                                             (mapv (fn [bias]
+                                                                                    (* (- learning-rate) bias))
+                                                                                  (flatten (seq biases)))))]
+                                            (assoc-in m [:layers layer-name]
+                                                     {:weights updated-weights
+                                                      :biases updated-biases})))
+                                        current-model
+                                        [:shared :policy :value])]  ; Update all layers
                 
-                ;; Update model weights using gradient descent
-                (let [updated-model (reduce (fn [m layer-name]
-                                            (let [layer (get-in m [:layers layer-name])
-                                                  weights (:weights layer)
-                                                  biases (:biases layer)
-                                                  ;; Gradient update with momentum
-                                                  updated-weights (nn/tensor-add weights
-                                                                               (tensor/->tensor
-                                                                                (mapv (fn [row]
-                                                                                       (mapv #(* (- learning-rate) %) row))
-                                                                                     (seq weights))))
-                                                  updated-biases (nn/tensor-add biases
-                                                                              (tensor/->tensor
-                                                                               (mapv (fn [bias]
-                                                                                      (* (- learning-rate) bias))
-                                                                                    (flatten (seq biases)))))]
-                                              (assoc-in m [:layers layer-name]
-                                                      {:weights updated-weights
-                                                       :biases updated-biases})))
-                                          current-model
-                                          [:policy :value])]
-                  (println "Batch average loss:" avg-loss)
-                  updated-model)))
-            model
+                (when (zero? (mod batch-num 10))  ; Print progress every 10 batches
+                  (println (format "Batch %d/%d - Learning rate: %.4f - Average loss: %.4f"
+                                 batch-num total-batches learning-rate avg-loss)))
+                
+                [updated-model (inc batch-num)]))
+            [model 0]  ; Start with batch number 0
             batches)))
 
 (defn train-cycle
   "Complete training cycle: self-play -> training -> evaluation"
-  [n-games]
+  [n-games & {:keys [save-path load-path]}]
   (println "\n=== Starting Training Cycle ===")
   (println "Games to play:" n-games)
   
+  ;; Load model if path provided
+  (when load-path
+    (println "Loading model from" load-path)
+    (load-model load-path))
+  
   ;; Self-play phase
   (println "\nCollecting self-play data...")
-  (let [game-histories (doall (repeatedly n-games self-play-game))
+  (let [game-histories (doall (map-indexed (fn [i _]
+                                           (println (format "Playing self-play game %d/%d..." (inc i) n-games))
+                                           (self-play-game))
+                                         (range n-games)))
         model (or @current-model (nn/create-game-pipeline))]
     
     ;; Training phase
     (println "\nTraining network...")
-    (let [trained-model (train-on-self-play-data model game-histories)]
+    (let [[trained-model _] (train-on-self-play-data model game-histories)]  ; Get just the model, not the batch count
       (reset! current-model trained-model))
     
     ;; Evaluation phase
     (println "\nEvaluating new model...")
-    (evaluate-strength 20)  ; Increased evaluation games
-    
-    {:games-played n-games
-     :model @current-model})) 
+    (let [eval-result (evaluate-strength 20)]  ; Increased evaluation games
+      (println "\nTraining cycle complete!")
+      (println "Final neural network rating:" (:neural-rating eval-result))
+      (println "Final random player rating:" (:random-rating eval-result))
+      
+      ;; Save model if path provided
+      (when save-path
+        (save-model save-path))
+      
+      {:games-played n-games
+       :model @current-model
+       :evaluation eval-result})))
+
+(defn inspect-model [& {:keys [save-path]}]
+  "Inspect the current model structure and optionally save it"
+  (when @current-model
+    (let [test-state (f/new-game)
+          result (nn/run-pipeline @current-model test-state :fit)
+          layers (:layers result)]
+      (println "\n=== Model Structure ===")
+      (doseq [[name layer] layers]
+        (println (format "\n%s layer:" name))
+        (let [weights (:weights layer)
+              biases (:biases layer)]
+          (println "  Weights:" (count (seq weights)) "x" (count (first (seq weights))))
+          (println "  Biases:" (count (flatten (seq biases))))))
+      
+      (when save-path
+        (save-model save-path))
+      
+      layers))) 
