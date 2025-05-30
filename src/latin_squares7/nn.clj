@@ -1,6 +1,5 @@
 (ns latin-squares7.nn
   (:require [latin-squares7.functions :as f]
-            [latin-squares7.mcts :as mcts]
             [tech.v3.dataset :as ds]
             [tech.v3.dataset.modelling :as ds-mod]
             [tech.v3.dataset.column-filters :as cf]
@@ -23,6 +22,12 @@
   (reset! trained-model model))
 
 ;; Helper Functions
+(defn get-random-move [game-state]
+  "Get a random valid move from the current position"
+  (let [valid-moves (f/suggested-moves (:board game-state))]
+    (when (seq valid-moves)
+      (rand-nth valid-moves))))
+
 (defn random-weight [input-size output-size]
   (* (Math/sqrt (/ 2.0 (+ input-size output-size)))
      (- (rand) 0.5)))
@@ -68,8 +73,56 @@
       (tensor/reshape t [(first dims) 1])
       t)))
 
+(defn to-double [x]
+  "Convert a value to double, handling nil and other types"
+  (cond
+    (nil? x) 0.0
+    (number? x) (double x)
+    :else (throw (ex-info "Cannot convert to double" {:value x}))))
+
+(defn seq->tensor [x]
+  "Convert a sequence to a tensor, handling various input types"
+  (cond
+    (nil? x) (tensor/->tensor [[0.0]])
+    (number? x) (tensor/->tensor [[(to-double x)]])
+    (vector? x) (if (number? (first x))
+                  (tensor/->tensor [(mapv to-double x)])
+                  (tensor/->tensor (mapv #(mapv to-double %) x)))
+    (seq? x) (if (number? (first x))
+               (tensor/->tensor [(mapv to-double (vec x))])
+               (tensor/->tensor (mapv #(mapv to-double %) (vec x))))
+    :else (throw (ex-info "Cannot convert to tensor" {:value x}))))
+
+(defn ensure-tensor [x]
+  "Convert a value to a tensor if it isn't already"
+  (cond
+    (tensor/tensor? x) x
+    :else (seq->tensor x)))
+
+(defn tensor-add [a b]
+  "Add tensors with broadcasting"
+  (let [a (ensure-2d-tensor a)
+        b (ensure-2d-tensor b)]
+    (tensor/->tensor
+     (for [i (range (first (get-tensor-dims a)))]
+       (for [j (range (second (get-tensor-dims a)))]
+         (double (+ (if (number? (nth (seq a) i))
+                     (nth (seq a) i)
+                     (nth (vec (seq (nth (seq a) i))) j))
+                   (if (number? (nth (seq b) i))
+                     (nth (seq b) i)
+                     (nth (vec (seq (nth (seq b) i))) j)))))))))
+
+(defn tensor-multiply [a b]
+  "Multiply tensors with broadcasting using df/*"
+  (df/* (ensure-tensor a) (ensure-tensor b)))
+
+(defn transpose [tensor]
+  "Transpose a tensor using our own transpose-matrix function"
+  (tensor/->tensor (transpose-matrix (seq (ensure-tensor tensor)))))
+
 (defn matrix-multiply [a b]
-  "Multiply two matrices using simple tensor operations"
+  "Multiply two matrices using tensor operations"
   (let [a (ensure-2d-tensor a)
         b (ensure-2d-tensor b)
         a-dims (get-tensor-dims a)
@@ -81,16 +134,30 @@
     (tensor/->tensor
      (for [i (range (first a-dims))]
        (for [j (range (second b-dims))]
-         (reduce + (map * (nth (seq a) i)
-                          (map #(nth % j) (seq b)))))))))
+         (double (reduce + (map #(double (* %1 %2))
+                               (if (number? (nth (seq a) i))
+                                 [(nth (seq a) i)]
+                                 (vec (seq (nth (seq a) i))))
+                               (map #(if (number? %)
+                                     %
+                                     (nth (vec (seq %)) j))
+                                  (seq b))))))))))
+
+(defn sigmoid [x]
+  "Sigmoid activation function"
+  (/ 1.0 (+ 1.0 (Math/exp (- x)))))
+
+(defn sigmoid-derivative [x]
+  "Derivative of sigmoid function: f'(x) = f(x) * (1 - f(x))"
+  (* x (- 1.0 x)))
 
 (defn relu [x]
   "ReLU activation function"
   (max 0.0 x))
 
-(defn sigmoid [x]
-  "Sigmoid activation function"
-  (/ 1.0 (+ 1.0 (Math/exp (- x)))))
+(defn relu-derivative [x]
+  "Derivative of ReLU function"
+  (if (> x 0.0) 1.0 0.0))
 
 (defn softmax [xs]
   "Compute softmax probabilities with numerical stability"
@@ -99,64 +166,130 @@
         sum-exp (reduce + exp-xs)]
     (map #(/ % sum-exp) exp-xs)))
 
-(defn tensor-add [a b]
-  "Add two tensors element-wise"
-  (let [a (ensure-2d-tensor a)
-        b (ensure-2d-tensor b)
-        a-dims (get-tensor-dims a)
-        b-dims (get-tensor-dims b)]
-    (cond
-      ;; If b is a single number, broadcast it
-      (and (= 1 (first b-dims)) (= 1 (second b-dims)))
-      (tensor/->tensor
-       (mapv (fn [a-row]
-               (mapv #(+ % (first (flatten (seq b)))) a-row))
-             (seq a)))
-      
-      ;; If a is a single number, broadcast it
-      (and (= 1 (first a-dims)) (= 1 (second a-dims)))
-      (tensor/->tensor
-       (mapv (fn [b-row]
-               (mapv #(+ (first (flatten (seq a))) %) b-row))
-             (seq b)))
-      
-      ;; If b is a row vector (1 x n), broadcast it across rows
-      (and (= 1 (first b-dims)))
-      (tensor/->tensor
-       (mapv (fn [a-row]
-               (mapv + a-row (first (seq b))))
-             (seq a)))
-      
-      ;; If a is a row vector (1 x n), broadcast it across rows
-      (and (= 1 (first a-dims)))
-      (tensor/->tensor
-       (mapv (fn [b-row]
-               (mapv + (first (seq a)) b-row))
-             (seq b)))
-      
-      ;; If b is a column vector (n x 1), broadcast it across columns
-      (and (= 1 (second b-dims)))
-      (tensor/->tensor
-       (mapv (fn [a-row b-val]
-               (mapv #(+ % (first (flatten (seq b-val)))) a-row))
-             (seq a)
-             (mapv vector (flatten (seq b)))))
-      
-      ;; If a is a column vector (n x 1), broadcast it across columns
-      (and (= 1 (second a-dims)))
-      (tensor/->tensor
-       (mapv (fn [b-row a-val]
-               (mapv #(+ (first (flatten (seq a-val))) %) b-row))
-             (seq b)
-             (mapv vector (flatten (seq a)))))
-      
-      ;; Otherwise, add element-wise
-      :else
-      (tensor/->tensor
-       (mapv (fn [a-row b-row]
-               (mapv + a-row b-row))
-             (seq a)
-             (seq b))))))
+(defn tensor-map [f tensor]
+  "Apply a function to each element of a tensor"
+  (let [tensor (ensure-tensor tensor)
+        data (seq tensor)]
+    (tensor/->tensor
+     (if (number? (first data))
+       (map f data)  ; 1D tensor
+       (map #(map f %) data)))))  ; 2D tensor
+
+(defn forward-pass [network input]
+  "Perform a forward pass through the network"
+  (loop [layers (:layers network)
+         activations [(ensure-tensor input)]
+         zs []]
+    (if (empty? layers)
+      {:activations (vec activations)
+       :zs (vec zs)}
+      (let [layer (first layers)
+            weights (ensure-2d-tensor (:weights layer))
+            biases (ensure-2d-tensor (:biases layer))
+            last-activation (ensure-2d-tensor (last activations))
+            z (tensor-add (matrix-multiply weights last-activation)
+                         biases)
+            activation (tensor-map sigmoid z)]
+        (recur (rest layers)
+               (conj activations activation)
+               (conj zs z))))))
+
+(defn safe-nth [coll i]
+  "Safely get the nth element of a collection, returning nil if out of bounds"
+  (try
+    (nth coll i)
+    (catch IndexOutOfBoundsException e
+      nil)))
+
+(defn safe-get-tensor-element [tensor i j]
+  "Safely get an element from a tensor, handling both scalar and vector cases"
+  (let [data (seq tensor)]
+    (if (nil? data)
+      0.0
+      (let [row (safe-nth data i)]
+        (if (number? row)
+          row
+          (let [col (safe-nth (vec (seq row)) j)]
+            (if (nil? col) 0.0 (double col))))))))
+
+(defn backward-pass [network forward-result target]
+  "Perform backpropagation to update weights"
+  (let [activations (:activations forward-result)
+        zs (:zs forward-result)
+        layers (:layers network)
+        learning-rate (to-double (:learning-rate network))
+        
+        ;; Calculate output layer error
+        output-activation (last activations)
+        target-tensor (ensure-tensor target)
+        output-error (tensor/->tensor
+                     (for [i (range (first (get-tensor-dims output-activation)))]
+                       (for [j (range (second (get-tensor-dims output-activation)))]
+                         (double (- (safe-get-tensor-element output-activation i j)
+                                  (safe-get-tensor-element target-tensor i j))))))
+        output-delta (tensor/->tensor
+                     (for [i (range (first (get-tensor-dims output-error)))]
+                       (for [j (range (second (get-tensor-dims output-error)))]
+                         (double (* (safe-get-tensor-element output-error i j)
+                                  (sigmoid-derivative
+                                   (safe-get-tensor-element output-activation i j)))))))
+        
+        ;; Backpropagate error
+        deltas (reduce (fn [deltas [layer z activation prev-activation]]
+                        (let [weight-delta (matrix-multiply (first deltas)
+                                                          (transpose prev-activation))
+                              bias-delta (first deltas)
+                              error (matrix-multiply (transpose (:weights layer))
+                                                   (first deltas))
+                              delta (tensor/->tensor
+                                    (for [i (range (first (get-tensor-dims error)))]
+                                      (for [j (range (second (get-tensor-dims error)))]
+                                        (double (* (safe-get-tensor-element error i j)
+                                                 (sigmoid-derivative
+                                                  (safe-get-tensor-element activation i j)))))))]
+                          (conj deltas delta)))
+                      [output-delta]
+                      (map vector
+                           (reverse (rest layers))
+                           (reverse (rest zs))
+                           (reverse (rest activations))
+                           (reverse (butlast activations))))
+        
+        ;; Update weights and biases
+        new-layers (map (fn [layer delta activation prev-activation]
+                         (let [weight-update (tensor/->tensor
+                                            (for [i (range (first (get-tensor-dims delta)))]
+                                              (for [j (range (second (get-tensor-dims delta)))]
+                                                (double (* learning-rate
+                                                         (safe-get-tensor-element delta i j))))))
+                               bias-update (tensor/->tensor
+                                          (for [i (range (first (get-tensor-dims delta)))]
+                                            (for [j (range (second (get-tensor-dims delta)))]
+                                              (double (* learning-rate
+                                                       (safe-get-tensor-element delta i j))))))
+                               new-weights (tensor/->tensor
+                                          (for [i (range (first (get-tensor-dims (:weights layer))))]
+                                            (for [j (range (second (get-tensor-dims (:weights layer))))]
+                                              (double (- (safe-get-tensor-element (:weights layer) i j)
+                                                       (safe-get-tensor-element weight-update i j))))))
+                               new-biases (tensor/->tensor
+                                         (for [i (range (first (get-tensor-dims (:biases layer))))]
+                                           (for [j (range (second (get-tensor-dims (:biases layer))))]
+                                             (double (+ (safe-get-tensor-element (:biases layer) i j)
+                                                      (safe-get-tensor-element bias-update i j))))))]
+                           {:weights new-weights
+                            :biases new-biases}))
+                       (reverse layers)
+                       (reverse deltas)
+                       (reverse (rest activations))
+                       (reverse (butlast activations)))]
+    (assoc network :layers (vec (reverse new-layers)))))
+
+(defn board->features [board]
+  "Convert a 7x7 board into a feature vector for the neural network"
+  (let [flattened (flatten board)]
+    (tensor/->tensor
+     (mapv #(if (nil? %) 0.0 %) flattened))))
 
 ;; Neural Network Pipeline Components
 (defn board->features-pipe
@@ -174,8 +307,8 @@
                                            :mode mode})))
           flattened-data (vec (map #(if (nil? %) 0.0 %) 
                                   (flatten board-data)))
-          features (debug-tensor "features" (ensure-2d-tensor (vec (take 49 flattened-data))))]
-      (assoc ctx :metamorph/data features))))
+          features (tensor/->tensor (vec (take 49 flattened-data)))]
+      (assoc ctx :metamorph/data (vec (map double (flatten (seq features))))))))
 
 (defn create-layer-pipe
   "Create neural network layers with weights and biases"
@@ -282,17 +415,17 @@
                                      {:data-type (type data)})))
           game-state (:metamorph/data (get-in ctx [:metamorph/context :original-data]))
           moves (f/suggested-moves (:board game-state))
-          move-keys (map mcts/compress-move moves)
           policy-logits (vec (flatten (seq (get predictions :policy))))
           policy-probs (vec (softmax policy-logits))  ; Ensure policy-probs is a vector
           value (get predictions :value)
           
           ;; Filter policy to only include valid moves and normalize
           valid-policy (when (and (seq moves) (seq policy-probs))
-                        (let [move-probs (map (fn [key]
-                                              (when (< key (count policy-probs))
-                                                (nth policy-probs key)))
-                                            move-keys)
+                        (let [move-probs (map (fn [move]
+                                              (let [move-key (f/compress-move move)]
+                                                (when (< move-key (count policy-probs))
+                                                  (nth policy-probs move-key))))
+                                            moves)
                               valid-probs (remove nil? move-probs)
                               max-prob (apply max valid-probs)
                               ;; Scale probabilities to be more reasonable
@@ -331,18 +464,6 @@
       (:metamorph/data result))))
 
 ;; Neural Network Implementation
-(defn sigmoid [x]
-  (/ 1.0 (+ 1.0 (Math/exp (- x)))))
-
-(defn sigmoid-derivative [x]
-  (* x (- 1.0 x)))
-
-(defn relu [x]
-  (max 0.0 x))
-
-(defn relu-derivative [x]
-  (if (> x 0.0) 1.0 0.0))
-
 (defn initialize-weights [input-size output-size]
   "Initialize weights using Xavier/Glorot initialization"
   (let [scale (Math/sqrt (/ 2.0 (+ input-size output-size)))
@@ -361,11 +482,10 @@
   "Create a neural network with the given layer sizes"
   (let [layers (map-indexed
                 (fn [i size]
-                  (create-layer (if (= i 0)
-                                 (first layer-sizes)
-                                 (nth layer-sizes (dec i)))
-                               size))
-                (rest layer-sizes))]
+                  (let [input-size (nth layer-sizes i)
+                        output-size (nth layer-sizes (inc i))]
+                    (create-layer input-size output-size)))
+                (range (dec (count layer-sizes))))]
     {:layers layers
      :learning-rate 0.01}))
 
@@ -408,32 +528,6 @@
                 [row]  ; Single element row
                 (tensor/->tensor row))))))  ; Convert row to tensor
 
-(defn to-double [x]
-  "Convert a value to double, handling nil and other types"
-  (cond
-    (nil? x) 0.0
-    (number? x) (double x)
-    :else (throw (ex-info "Cannot convert to double" {:value x}))))
-
-(defn seq->tensor [x]
-  "Convert a sequence to a tensor, handling various input types"
-  (cond
-    (nil? x) (tensor/->tensor [[0.0]])
-    (number? x) (tensor/->tensor [[(to-double x)]])
-    (vector? x) (if (number? (first x))
-                  (tensor/->tensor [(mapv to-double x)])
-                  (tensor/->tensor (mapv #(mapv to-double %) x)))
-    (seq? x) (if (number? (first x))
-               (tensor/->tensor [(mapv to-double (vec x))])
-               (tensor/->tensor (mapv #(mapv to-double %) (vec x))))
-    :else (throw (ex-info "Cannot convert to tensor" {:value x}))))
-
-(defn ensure-tensor [x]
-  "Convert a value to a tensor if it isn't already"
-  (cond
-    (tensor/tensor? x) x
-    :else (seq->tensor x)))
-
 (defn broadcast-shapes [a b]
   "Ensure tensors have compatible shapes for operations"
   (let [a-tensor (ensure-tensor a)
@@ -446,129 +540,61 @@
       (= (count b-shape) 1) [a-tensor (tensor/->tensor (repeat (first a-shape) (first b-shape)))]  ; Broadcast b
       :else (throw (ex-info "Incompatible shapes" {:a-shape a-shape :b-shape b-shape})))))
 
-(defn tensor-add [a b]
-  "Add tensors with broadcasting using df/+"
-  (df/+ (ensure-tensor a) (ensure-tensor b)))
-
-(defn tensor-multiply [a b]
-  "Multiply tensors with broadcasting using df/*"
-  (df/* (ensure-tensor a) (ensure-tensor b)))
-
-(defn transpose [tensor]
-  "Transpose a tensor using df/transpose"
-  (df/transpose (ensure-tensor tensor)))
-
-(defn forward-pass [network input]
-  "Perform a forward pass through the network"
-  (loop [layers (:layers network)
-         activations [(ensure-tensor input)]
-         zs []]
-    (if (empty? layers)
-      {:activations (vec activations)
-       :zs (vec zs)}
-      (let [layer (first layers)
-            weights (ensure-tensor (:weights layer))
-            biases (ensure-tensor (:biases layer))
-            last-activation (ensure-tensor (last activations))
-            z (df/+ (df/matmul weights last-activation)
-                   biases)
-            activation (df/map sigmoid z)]
-        (recur (rest layers)
-               (conj activations activation)
-               (conj zs z))))))
-
-(defn backward-pass [network forward-result target]
-  "Perform backpropagation to update weights"
-  (let [activations (:activations forward-result)
-        zs (:zs forward-result)
-        layers (:layers network)
-        learning-rate (to-double (:learning-rate network))
-        
-        ;; Calculate output layer error
-        output-activation (last activations)
-        target-tensor (ensure-tensor target)
-        output-error (df/- output-activation target-tensor)
-        output-delta (df/* output-error
-                          (df/map sigmoid-derivative output-activation))
-        
-        ;; Backpropagate error
-        deltas (reduce (fn [deltas [layer z activation prev-activation]]
-                        (let [weight-delta (df/matmul (first deltas)
-                                                    (df/transpose prev-activation))
-                              bias-delta (first deltas)
-                              error (df/matmul (df/transpose (:weights layer))
-                                             (first deltas))
-                              delta (df/* error
-                                        (df/map sigmoid-derivative activation))]
-                          (conj deltas delta)))
-                      [output-delta]
-                      (map vector
-                           (reverse (rest layers))
-                           (reverse (rest zs))
-                           (reverse (rest activations))
-                           (reverse (butlast activations))))
-        
-        ;; Update weights and biases
-        new-layers (map (fn [layer delta activation prev-activation]
-                         (let [weight-update (df/* learning-rate 
-                                                 (df/matmul delta
-                                                           (df/transpose prev-activation)))
-                               bias-update (df/* learning-rate delta)]
-                           {:weights (df/- (:weights layer) weight-update)
-                            :biases (df/+ (:biases layer) bias-update)}))
-                       (reverse layers)
-                       (reverse deltas)
-                       (reverse (rest activations))
-                       (reverse (butlast activations)))]
-    (assoc network :layers (vec (reverse new-layers)))))
-
 (defn train-network [network inputs targets epochs]
   "Train the network for the specified number of epochs"
   (loop [current-network network
          epoch 0]
     (if (>= epoch epochs)
       current-network
-      (let [forward-results (map #(forward-pass current-network %) inputs)
-            new-network (reduce (fn [net [forward-result target]]
-                                (backward-pass net forward-result target))
-                              current-network
-                              (map vector forward-results targets))]
-        (recur new-network (inc epoch))))))
-
-;; Game-specific functions
-(defn board->features [board]
-  "Convert a 7x7 board into a feature vector for the neural network"
-  (let [flattened (flatten board)]
-    (tensor/->tensor
-     (mapv #(if (nil? %) 0.0 %) flattened))))
-
+      (do
+        (when (zero? (mod epoch 1))  ; Log every epoch instead of every 10
+          (println "Training epoch:" epoch))
+        (let [forward-results (doall (map #(forward-pass current-network %) inputs))  ; Force evaluation
+              new-network (reduce (fn [net [forward-result target]]
+                                  (backward-pass net forward-result target))
+                                current-network
+                                (map vector forward-results targets))]
+          (recur new-network (inc epoch))))))
+)
 (defn create-game-network []
   "Create a neural network for the game:
    - Input layer: 49 neurons (7x7 board)
    - Hidden layer: 128 neurons with ReLU activation
    - Output layer: 1 neuron with sigmoid activation"
-  (create-network [49 128 1]))
+  (let [input-size 49
+        hidden-size 128
+        output-size 1]
+    (create-network [input-size hidden-size output-size])))
 
 (defn train-model [n-games]
   "Train a model on n games"
-  (let [games (repeatedly n-games mcts/auto-play-full-game)
-        features (mapv #(board->features (:board %)) games)
-        labels (mapv #(tensor/->tensor [(if (f/solved? %) 1.0 0.0)]) games)
+  (println "Starting model training on" n-games "games")
+  (let [games (doall (repeatedly n-games #(f/play-game f/get-random-move)))  ; Force evaluation
+        features (doall (mapv #(board->features (:board %)) games))  ; Force evaluation
+        labels (doall (mapv #(tensor/->tensor [(if (f/solved? %) 1.0 0.0)]) games))  ; Force evaluation
         network (create-game-network)]
-    (train-network network features labels 100)))  ; 100 epochs
+    (println "Created network with" (count (:layers network)) "layers")
+    (println "Training on" (count features) "examples")
+    (train-network network features labels 5)))  ; Reduced from 10 to 5 epochs for testing
 
 (defn predict [game-state]
   "Use the model to predict the best move"
-  (let [model (train-model 100)  ; Train on 100 games
+  (let [model (train-model 10)  ; Reduced from 100 to 10 games for testing
         features (board->features (:board game-state))
         forward-result (forward-pass model features)
-        prediction (first (last (:activations forward-result)))
-        moves (f/suggested-moves (:board game-state))]
+        last-activation (last (:activations forward-result))
+        prediction (double (first (flatten (seq last-activation))))  ; Extract numeric value from tensor
+        moves (f/suggested-moves (:board game-state))
+        all-possible-moves (for [row (range 7)
+                               col (range 7)
+                               val (range 1 8)]
+                           [row col val])
+        uniform-prob (/ 1.0 343)]  ; Equal probability for all possible moves
     (if (and (> prediction 0.5) (seq moves))
-      {:policy (zipmap moves (repeat (/ 1.0 (count moves))))  ; Uniform priors
+      {:policy (zipmap all-possible-moves (repeat uniform-prob))  ; Return all possible moves with uniform probability
        :value prediction}
-      {:policy {}  ; Empty policy if no confident prediction
-       :value 0.0})))
+      {:policy (zipmap all-possible-moves (repeat uniform-prob))  ; Even if prediction is low, return all moves
+       :value prediction})))
 
 (defn get-best-move [game-state]
   "Get the best move using the trained model"
@@ -621,100 +647,35 @@
      :best-move best-move
      :move-stats move-stats}))
 
-;; MCTS with Neural Network
-(defn mcts-with-nn
-  "Monte Carlo Tree Search with neural network policies"
-  [state iterations]
-  ;; Initialize model if needed
-  (when (nil? @trained-model)
-    (println "Initializing neural network model...")
-    (set-trained-model (train-on-self-play 100)))
-    
-  (let [initial-root (mcts/new-node state 1.0)  ;; Root node has prior 1.0
-        tree (atom {:root initial-root})]
-    
-    ;; First expansion of root node with neural network priors
-    (let [initial-moves (f/suggested-moves (:board state))
-          initial-children (into {} (map (fn [move] 
-                                         (let [move-key (mcts/compress-move move)
-                                               prior (get-in (run-pipeline @trained-model state :transform)
-                                                           [:policy move] 0.0)]
-                                           [move-key 
-                                            (mcts/new-node (f/make-move state move) prior)]))
-                                       initial-moves))
-          root-with-children (assoc initial-root :children initial-children)]
-      (reset! tree {:root root-with-children}))
-    
-    (dotimes [_ iterations]
-      (let [path (mcts/select-path @tree)
-            node (get-in @tree (cons :root path))
-            expanded-path (if (and (empty? (:children node))
-                                 (not (f/game-over? (:state node))))
-                          (mcts/expand-node node)
-                          path)
-            expanded-node (get-in @tree (cons :root expanded-path))
-            result (if (f/game-over? (:state expanded-node))
-                    (if (f/solved? (:state expanded-node)) 1.0 0.0)
-                    (get-in (run-pipeline @trained-model (:state expanded-node) :transform)
-                           [:value] 0.0))  ;; Use neural network value
-            _ (mcts/backpropagate expanded-path result)]))
-    
-    (mcts/best-move @tree)))
 
-(defn self-play-game []
-  "Play a full game using neural-guided MCTS and return the game history"
-  (loop [game-state (f/new-game)
-         moves []
-         history []]
-    (if (f/game-over? game-state)
-      {:board (:board game-state)
-       :moves moves
-       :solved? (f/solved? game-state)
-       :history history}
-      (let [move (mcts-with-nn game-state 500)]  ;; Using 500 iterations for each move
-        (if move
-          (recur (f/make-move game-state move)
-                 (conj moves move)
-                 (conj history {:state game-state
-                              :move move
-                              :result (if (f/solved? (f/make-move game-state move))
-                                       1.0
-                                       0.0)}))
-          {:board (:board game-state)
-           :moves moves
-           :solved? (f/solved? game-state)
-           :history history})))))
+;; Move selection functions
+(defn get-policy-map [game-state]
+  "Get policy map from neural network predictions"
+  (let [predictions (predict game-state)
+        policy (:policy predictions)
+        moves (f/suggested-moves (:board game-state))
+        move-probs (zipmap moves (map #(double (get policy % 0.0)) moves))]  ; Ensure all probabilities are doubles
+    move-probs))
 
-(defn train-on-self-play [n-games]
-  "Train the model through self-play games"
-  (let [pipeline (create-game-pipeline)
-        games (repeatedly n-games self-play-game)
-        trained-model (reduce (fn [model game]
-                              (try
-                                (println "\n=== Training on Self-Play Game ===")
-                                (println "Game result:" (if (:solved? game) "Solved" "Not Solved"))
-                                
-                                ;; Train on each position in the game
-                                (reduce (fn [current-model {:keys [state move result]}]
-                                        (let [result (run-pipeline current-model state :fit)]
-                                          (if (contains? result :layers)
-                                            result
-                                            current-model)))
-                                      model
-                                      (:history game))
-                                
-                                (catch Exception e
-                                  (println "\nError during training:")
-                                  (println "Exception message:" (.getMessage e))
-                                  model)))  ; Return unchanged model on error
-                            pipeline
-                            games)]
-    trained-model))
-
-(defn retrain-model [num-games]
-  "Retrain the model on new self-play games"
-  (println "Retraining model on" num-games "self-play games...")
-  (set-trained-model (train-on-self-play num-games)))
+(defn select-move [game-state]
+  "Select a move based on neural network policy"
+  (let [policy-map (get-policy-map game-state)
+        moves (vec (keys policy-map))  ; Convert to vector for indexing
+        probs (vec (map double (vals policy-map)))  ; Ensure all probabilities are doubles
+        total-prob (reduce + probs)]
+    (when (and (seq moves) (> total-prob 0.0))  ; Only proceed if we have moves and non-zero total probability
+      (let [normalized-probs (map #(/ % total-prob) probs)
+            selected-index (loop [r (rand)
+                                remaining-probs (vec normalized-probs)  ; Convert to vector for indexing
+                                index 0]
+                           (if (or (empty? remaining-probs)
+                                  (< r (first remaining-probs)))
+                             index
+                             (recur (- r (first remaining-probs))
+                                   (vec (rest remaining-probs))  ; Convert to vector for indexing
+                                   (inc index))))]
+        (when (< selected-index (count moves))  ; Ensure index is valid
+          (nth moves selected-index))))))
 
 
 

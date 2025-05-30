@@ -117,7 +117,7 @@
       (cond
         (not (vector? move)) (do (println "Move must be a vector") nil)
         (not= 3 (count move)) (do (println "Move needs 3 numbers") nil)
-        :else (if (f/valid-move? (:board game-state) move)
+        :else (if (f/suggested-move? (:board game-state) move)
                 move
                 (do (println "Invalid move! Check row/column constraints")
                     nil))))

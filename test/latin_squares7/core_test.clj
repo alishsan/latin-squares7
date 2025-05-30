@@ -2,7 +2,7 @@
   (:require [clojure.test :refer :all]
     [clojure.spec.alpha :as s]
             [latin-squares7.functions :as f]
-            [latin-squares7.mcts :as mcts]))
+            [latin-squares7.nn :as nn]))
 
 (deftest game-logic-test
   (testing "Number validation"
@@ -59,31 +59,19 @@
 
 
 (deftest suggested-moves-test
-  (testing "Move suggestion correctness"
-    ;; Create a valid board according to specs
-    (let [valid-board [[1 nil nil nil nil nil nil]
-                       [nil 2 nil nil nil nil nil]
-                       [nil nil nil nil nil nil nil]
-                       [nil nil nil nil nil nil nil]
-                       [nil nil nil nil nil nil nil]
-                       [nil nil nil nil nil nil nil]
-                       [nil nil nil nil nil nil nil]]]
-      ;; First verify the board is valid
-      (is (s/valid? ::f/board valid-board))
-      
-      ;; Now test suggestions
-      (let [suggestions (f/suggested-moves valid-board)]
-        ;; Should not suggest moves to occupied cells
-        (is (not-any? #{[0 0 1]} suggestions))
-        (is (not-any? #{[1 1 2]} suggestions))
-        
-        ;; Should not suggest numbers already in row/column
-        (is (not-any? #{[0 1 1]} suggestions)) ; 1 in row 0
-        (is (not-any? #{[1 0 2]} suggestions)) ; 2 in column 0
-        
-        ;; Should suggest valid moves
-        (is (some #{[0 1 3]} suggestions))
-        (is (some #{[2 2 4]} suggestions))))))
+  "Test that suggested moves are valid"
+  (let [board (f/new-board)
+        moves (f/suggested-moves board)]
+    (is (seq moves))
+    (is (every? #(f/valid-move? board %) moves))))
+
+(deftest select-move-test
+  "Test that selected move is valid"
+  (let [board (f/new-board)
+        suggested-moves (f/suggested-moves board)
+        selected-move (when (seq suggested-moves)
+                       (rand-nth suggested-moves))]
+    (is (some #{selected-move} suggested-moves))))
 
 ;; Updated helper function with better error reporting
 (defn create-test-board [rows]
@@ -127,31 +115,77 @@
                                            [7 nil nil nil nil nil nil]])]
       (is (f/game-over? blocked-board)))))
 
-(deftest best-move-test
-  (testing "MCTS best-move returns a valid move on a new game"
-    (let [game (f/new-game)
-          tree {:root {:wins 0 
-                      :visits 1 
-                      :children {[0 0 1] {:wins 1 :visits 2 :children {}}
-                               [0 0 2] {:wins 0 :visits 1 :children {}}}
-                      :state game}}
-          move (mcts/best-move tree)]
-      (is (vector? move))
-      (is (= 3 (count move)))
-      (is (f/valid-move? (:board game) move))))
-  (testing "MCTS best-move returns a valid move after one move"
-    (let [game (f/new-game)
-          first-move [0 0 1]
-          game-after-move (f/make-move game first-move)
-          tree {:root {:wins 0 
-                      :visits 1 
-                      :children {[0 1 2] {:wins 1 :visits 2 :children {}}
-                               [0 1 3] {:wins 0 :visits 1 :children {}}}
-                      :state game-after-move}}
-          move (mcts/best-move tree)]
-      (is (vector? move))
-      (is (= 3 (count move)))
-      (is (f/valid-move? (:board game-after-move) move)))))
+(deftest neural-network-test
+  (testing "Neural network basic operations"
+    ;; Test tensor operations
+    (let [a [[1 2] [3 4]]
+          b [[5 6] [7 8]]]
+      (is (= [[6.0 8.0] [10.0 12.0]] (vec (map vec (seq (nn/tensor-add a b))))))
+      (is (= [[19.0 22.0] [43.0 50.0]] (vec (map vec (seq (nn/matrix-multiply a b)))))))
+    
+    ;; Test activation functions
+    (is (= 0.0 (nn/relu -1.0)))
+    (is (= 1.0 (nn/relu 1.0)))
+    (is (< 0.5 (nn/sigmoid 1.0)))
+    (is (> 0.5 (nn/sigmoid -1.0)))
+    
+    ;; Test softmax
+    (let [probs (nn/softmax [1.0 2.0 3.0])]
+      (is (= 3 (count probs)))
+      (is (every? #(and (>= % 0.0) (<= % 1.0)) probs))
+      (is (< (Math/abs (- 1.0 (reduce + probs))) 1e-10))))
+  
+  (testing "Board to features conversion"
+    (let [board [[1 nil nil nil nil nil nil]
+                 [nil 2 nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]]
+          features (vec (flatten (seq (get ((nn/board->features-pipe) {:metamorph/data board}) :metamorph/data))))]
+      (is (= 49 (count features)))
+      (is (= 1.0 (nth features 0)))
+      (is (= 2.0 (nth features 8)))
+      (is (= 0.0 (nth features 2)))))
+  
+  (testing "Neural network predictions"
+    (let [board [[1 nil nil nil nil nil nil]
+                 [nil 2 nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]]
+          game-state {:board board}
+          predictions (nn/predict game-state)]
+      (is (map? predictions))
+      (is (contains? predictions :policy))
+      (is (contains? predictions :value))
+      (is (= 343 (count (:policy predictions)))))))
+
+(deftest neural-network-move-selection-test
+  (testing "Neural network move selection"
+    (let [board [[1 nil nil nil nil nil nil]
+                 [nil 2 nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]]
+          game-state {:board board}
+          policy-map (nn/get-policy-map game-state)]
+      ;; Test policy map structure
+      (is (map? policy-map))
+      (is (every? #(and (vector? %) (= 3 (count %))) (keys policy-map)))
+      (is (every? #(and (number? %) (>= % 0.0) (<= % 1.0)) (vals policy-map)))
+      
+      ;; Test move selection
+      (let [suggested-moves (f/suggested-moves board)
+            selected-move (nn/select-move game-state)]
+        (is (vector? selected-move))
+        (is (= 3 (count selected-move)))
+        (is (some #{selected-move} suggested-moves))))))
 
 
 

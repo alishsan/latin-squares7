@@ -54,14 +54,18 @@
   (:current-player game-state))
 
 (defn make-move [game-state move]
-  (let [board (:board game-state)
-        [row col num] move
-        new-board (assoc-in board [row col] num)
-        new-player (if (= :alice (:current-player game-state))
-                    :bob
-                    :alice)]
-    {:board new-board
-     :current-player new-player}))
+  (when (and game-state move)  ; Return nil if either input is nil
+    (let [board (:board game-state)
+          [row col num] move]
+      (when (valid-move? board move)  ; Only proceed if move is valid
+        (let [new-board (assoc-in board [row col] num)
+              new-player (if (= :alice (:current-player game-state))
+                          :bob
+                          :alice)
+              turn-number (inc (or (:turn-number game-state) 0))]
+          {:board new-board
+           :current-player new-player
+           :turn-number turn-number})))))
 
 (defn valid-game-state? [game-state]
   (and (instance? GameState game-state)
@@ -85,14 +89,27 @@
         :when (valid-move? board [row col num])]
     [row col num]))
 
-(defn solved? [game-state]
-  (let [board (:board game-state)]
-    (every? some? (flatten board))))
+(defn get-random-move [game-state]
+  "Get a random valid move from the current position"
+  (let [valid-moves (suggested-moves (:board game-state))]
+    (when (seq valid-moves)
+      (rand-nth valid-moves))))
 
 (defn game-over? [game-state]
-  (let [board (:board game-state)]
-    (or (every? some? (flatten board))
-        (empty? (suggested-moves board)))))
+  "Check if the game is over (either solved or blocked)"
+  (let [board (:board game-state)
+        is-full (every? #(every? some? %) board)
+        valid-moves (suggested-moves board)]
+    (or is-full  ; Game is over if board is full
+        (empty? valid-moves))))  ; Or if there are no valid moves
+
+(defn solved? [game-state]
+  "Check if the game is solved (board is full and all moves are valid)"
+  (let [board (:board game-state)
+        is-full (every? #(every? some? %) board)
+        valid-moves (suggested-moves board)]
+    (and is-full  ; Board must be full
+         (not (empty? valid-moves)))))  ; And must have valid moves
 
 ;; ======================
 ;; Move Compression
