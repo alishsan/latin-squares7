@@ -95,7 +95,7 @@
     (println "Final random player rating:" @random-rating)
     
     (doseq [[i result] (map-indexed vector results)]
-      (println (format "Game %d: %s won (neural: %d, random: %d, moves: %d)"
+      (println (format "Game %d: %s won (neural: %f, random: %f, moves: %d)"
                       (inc i)
                       (name (:winner result))
                       (:neural-rating result)
@@ -143,19 +143,31 @@
          moves []]
     (if (or (>= moves-made max-moves)
             (f/game-over? state))
-      {:final-state state
-       :moves-made moves-made
-       :solved? (f/solved? state)
-       :moves moves}
+      (do
+        (println "\nFinal board state:")
+        (f/print-board (:board state))
+        (println "Moves made:" moves-made)
+        (println "Game over?" (f/game-over? state))
+        (println "Solved?" (f/solved? state))
+        {:final-state state
+         :moves-made moves-made
+         :solved? (f/solved? state)
+         :moves moves})
       (let [move (get-best-move state)]
         (if move
           (recur (f/make-move state move)
                  (inc moves-made)
                  (conj moves move))
-          {:final-state state
-           :moves-made moves-made
-           :solved? (f/solved? state)
-           :moves moves})))))
+          (do
+            (println "\nFinal board state:")
+            (f/print-board (:board state))
+            (println "Moves made:" moves-made)
+            (println "Game over?" (f/game-over? state))
+            (println "Solved?" (f/solved? state))
+            {:final-state state
+             :moves-made moves-made
+             :solved? (f/solved? state)
+             :moves moves}))))))
 
 (defn game-loop []
   (display-board @game-state)

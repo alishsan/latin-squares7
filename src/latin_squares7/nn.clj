@@ -589,9 +589,17 @@
                                col (range 7)
                                val (range 1 8)]
                            [row col val])
+        temperature 1.0  ; Temperature for softmax scaling
+        logits (map #(if (f/valid-move? (:board game-state) %)
+                      (Math/exp (/ (rand) temperature))  ; Higher probability for valid moves
+                      0.0)  ; Zero probability for invalid moves
+                   all-possible-moves)
+        probs (softmax logits)
         uniform-prob (/ 1.0 343)]  ; Equal probability for all possible moves
+    (println "[DEBUG] NN prediction value:" prediction)
+    (println "[DEBUG] Number of valid moves:" (count moves))
     (if (and (> prediction 0.5) (seq moves))
-      {:policy (zipmap all-possible-moves (repeat uniform-prob))  ; Return all possible moves with uniform probability
+      {:policy (zipmap all-possible-moves probs)  ; Use temperature-scaled probabilities
        :value prediction}
       {:policy (zipmap all-possible-moves (repeat uniform-prob))  ; Even if prediction is low, return all moves
        :value prediction})))
@@ -609,24 +617,47 @@
 
 (defn autoplay-from-position [game-state max-moves]
   "Autoplay from a given position using the neural network model"
+  (println "\nStarting autoplay from position:")
+  (let [board (:board game-state)]
+    (println "Initial board:")
+    (f/print-board board))
   (loop [state game-state
          moves-made 0
          moves []]
-    (if (or (>= moves-made max-moves)
-            (f/game-over? state))
-      {:final-state state
-       :moves-made moves-made
-       :solved? (f/solved? state)
-       :moves moves}
-      (let [move (get-best-move state)]
-        (if move
-          (recur (f/make-move state move)
-                 (inc moves-made)
-                 (conj moves move))
+    (let [board (:board state)]
+      (println "\nMove" moves-made ":")
+      (println "Current board:")
+      (f/print-board board)
+      (if (f/game-over? state)
+        (do
+          (println "\nGame ended:")
+          (println "Final board state:")
+          (f/print-board board)
+          (println "Moves made:" moves-made)
+          (println "Game over?" (f/game-over? state))
+          (println "Solved?" (f/solved? state))
           {:final-state state
            :moves-made moves-made
            :solved? (f/solved? state)
-           :moves moves})))))
+           :moves moves})
+        (let [move (get-best-move state)]
+          (if move
+            (do
+              (println "Making move:" move)
+              (recur (f/make-move state move)
+                     (inc moves-made)
+                     (conj moves move)))
+            (do
+              (println "\nNo valid moves available:")
+              (println "Final board state:")
+              (f/print-board board)
+              (println "Moves made:" moves-made)
+              (println "Game over?" (f/game-over? state))
+              (println "Solved?" (f/solved? state))
+              {:final-state state
+               :moves-made moves-made
+               :solved? (f/solved? state)
+               :moves moves})))))))
 
 (defn analyze-position [game-state n-simulations]
   "Analyze a position by running multiple simulations.
@@ -655,6 +686,8 @@
         policy (:policy predictions)
         moves (f/valid-moves (:board game-state))
         move-probs (zipmap moves (map #(double (get policy % 0.0)) moves))]  ; Ensure all probabilities are doubles
+    (println "[DEBUG] Policy map size:" (count move-probs))
+    (println "[DEBUG] Valid moves:" moves)
     move-probs))
 
 (defn select-move [game-state]
@@ -676,6 +709,12 @@
                                    (inc index))))]
         (when (< selected-index (count moves))  ; Ensure index is valid
           (nth moves selected-index))))))
+
+(defn initialize-model []
+  "Initialize the neural network model if not already done"
+  (when (nil? @trained-model)
+    (println "Initializing neural network model...")
+    (reset! trained-model (create-game-pipeline))))
 
 
 

@@ -72,20 +72,23 @@
     (is (seq moves))
     (is (every? #(f/valid-move? board %) moves))
     (testing "Valid moves on blocked board (should be empty)"
-      (let [blocked-board [[1 2 3 4 5 6 7]
-                           [2 3 4 5 6 7 1]
-                           [3 4 5 6 7 1 2]
-                           [4 5 6 7 1 2 3]
-                           [5 6 7 1 2 3 4]
-                           [6 7 1 2 3 4 5]
-                           [7 1 2 3 4 5 6]]
+      (let [blocked-board [[7 nil 5 4 3 nil 1]
+                           [4 7 6 1 nil 3 2]
+                           [5 6 7 nil 1 2 3]
+                           [3 nil 1 7 6 5 4]
+                           [nil 3 2 6 7 4 5]
+                           [2 1 3 5 4 7 6]
+                           [1 2 4 3 5 6 7]]
             candidate-moves (f/valid-moves blocked-board)
             valid-moves (vec (filter (fn [move]
                                      (and (f/valid-move? blocked-board move)
                                           (nil? (get-in blocked-board [(nth move 0) (nth move 1)]))))
                                    candidate-moves))]
         (println "Valid moves (or invalid moves) for blocked board:" candidate-moves)
-        (is (empty? valid-moves))))))
+        (is (empty? valid-moves))))
+))
+
+
 
 (deftest select-move-test
   "Test that selected move is valid"
@@ -255,6 +258,24 @@
 ;;           valid-moves (f/valid-moves (:board blocked-board))]
 ;;       (println "Valid moves (or invalid moves) for blocked board:" valid-moves)
 ;;       (is (empty? valid-moves)))))
+
+(deftest neural-network-autoplay-test
+  (testing "Neural network autoplay"
+    (let [board [[1 nil nil nil nil nil nil]
+                 [nil 2 nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]]
+          game-state {:board board}
+          _ (nn/initialize-model)  ; Initialize the model before testing
+          result (nn/autoplay-from-position game-state 10)]  ; Try up to 10 moves
+      (is (map? result))
+      (is (contains? result :final-state))
+      (is (contains? result :moves-made))
+      (is (contains? result :solved?))
+      (is (contains? result :moves)))))
 
 
 

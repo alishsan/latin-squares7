@@ -18,6 +18,13 @@
                            :num ::number)))  ;; Strict number validation
 
 ;; ======================
+;; Utility Functions
+;; ======================
+(defn print-board [board]
+  (doseq [row board]
+    (println (map #(or % "_") row))))
+
+;; ======================
 ;; Core Game Functions
 ;; ======================
 (defn get-row [board row]
@@ -183,19 +190,29 @@
          moves []]
     (if (or (>= moves-made max-moves)
             (game-over? state))
-      {:final-state state
-       :moves-made moves-made
-       :game-over? (game-over? state)
-       :moves moves}
+      (do
+        (println "\nFinal board state:")
+        (print-board (:board state))
+        (println "Moves made:" moves-made)
+        (println "Game over?" (game-over? state))
+        {:final-state state
+         :moves-made moves-made
+         :game-over? (game-over? state)
+         :moves moves})
       (let [move (move-selector state)]
         (if move
           (recur (make-move state move)
                  (inc moves-made)
                  (conj moves move))
-          {:final-state state
-           :moves-made moves-made
-           :game-over? (game-over? state)
-           :moves moves})))))
+          (do
+            (println "\nFinal board state (no valid moves):")
+            (print-board (:board state))
+            (println "Moves made:" moves-made)
+            (println "Game over?" (game-over? state))
+            {:final-state state
+             :moves-made moves-made
+             :game-over? (game-over? state)
+             :moves moves}))))))
 
 ;; ======================
 ;; Debugging Utilities
@@ -249,10 +266,6 @@
 
 (defn load-game [path]
   (-> path slurp read-string edn->game-state))
-
-(defn print-board [board]
-  (doseq [row board]
-    (println (map #(or % "_") row))))
 
 ;; (println "Board valid?" (s/valid? ::board (:board (new-game))))
 ;; (println "Valid moves:" (valid-moves (:board (new-game))))
