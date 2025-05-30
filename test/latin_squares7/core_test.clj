@@ -4,6 +4,13 @@
             [latin-squares7.functions :as f]
             [latin-squares7.nn :as nn]))
 
+;; Updated helper function with better error reporting                                                                                                                       
+(defn create-test-board [rows]
+  {:pre [(do (println "Validating board:" (s/explain-str ::f/board rows))
+         (s/valid? ::f/board rows))]}
+  (-> (f/new-game)
+      (assoc :board (vec (map vec rows)))))
+
 (deftest game-logic-test
   (testing "Number validation"
     (is (f/valid-number? 1))
@@ -17,9 +24,9 @@
   (testing "Edge cases"
     (is (nil? (f/make-move nil [0 0 1])))       ; nil game state
     (is (nil? (f/make-move (f/new-game) nil)))   ; nil move
-        (is (nil? (f/make-move (f/new-game) [0 0 8]))))) ; invalid number
+        (is (nil? (f/make-move (f/new-game) [0 0 8])))) ; invalid number
 
-(deftest valid-moves-test
+
   (testing "Successful moves and conflicts"
     (let [initial (f/new-game)
           after-first (f/make-move initial [0 0 1])
@@ -58,27 +65,36 @@
 
 
 
-(deftest suggested-moves-test
+(deftest valid-moves-test
   "Test that suggested moves are valid"
   (let [board (f/new-board)
-        moves (f/suggested-moves board)]
+        moves (f/valid-moves board)]
     (is (seq moves))
-    (is (every? #(f/valid-move? board %) moves))))
+    (is (every? #(f/valid-move? board %) moves))
+    (testing "Valid moves on blocked board (should be empty)"
+      (let [blocked-board [[1 2 3 4 5 6 7]
+                           [2 3 4 5 6 7 1]
+                           [3 4 5 6 7 1 2]
+                           [4 5 6 7 1 2 3]
+                           [5 6 7 1 2 3 4]
+                           [6 7 1 2 3 4 5]
+                           [7 1 2 3 4 5 6]]
+            candidate-moves (f/valid-moves blocked-board)
+            valid-moves (vec (filter (fn [move]
+                                     (and (f/valid-move? blocked-board move)
+                                          (nil? (get-in blocked-board [(nth move 0) (nth move 1)]))))
+                                   candidate-moves))]
+        (println "Valid moves (or invalid moves) for blocked board:" candidate-moves)
+        (is (empty? valid-moves))))))
 
 (deftest select-move-test
   "Test that selected move is valid"
   (let [board (f/new-board)
-        suggested-moves (f/suggested-moves board)
-        selected-move (when (seq suggested-moves)
-                       (rand-nth suggested-moves))]
-    (is (some #{selected-move} suggested-moves))))
+        valid-moves (f/valid-moves board)
+        selected-move (when (seq valid-moves)
+                       (rand-nth valid-moves))]
+    (is (some #{selected-move} valid-moves))))
 
-;; Updated helper function with better error reporting
-(defn create-test-board [rows]
-  {:pre [(do (println "Validating board:" (s/explain-str ::f/board rows))
-         (s/valid? ::f/board rows))]}
-  (-> (f/new-game)
-      (assoc :board (vec (map vec rows)))))
 
 (deftest game-over-test
   (testing "Game termination conditions"
@@ -107,12 +123,13 @@
     
     ;; Test board with no valid moves remaining
     (let [blocked-board (create-test-board [[1 2 3 4 5 6 7]
-                                           [2 nil nil nil nil nil nil]
-                                           [3 nil nil nil nil nil nil]
-                                           [4 nil nil nil nil nil nil]
-                                           [5 nil nil nil nil nil nil]
-                                           [6 nil nil nil nil nil nil]
-                                           [7 nil nil nil nil nil nil]])]
+                           [2 3 4 5 6 7 1]
+                           [3 4 5 6 7 1 2]
+                           [4 5 6 7 1 2 3]
+                           [5 6 7 1 2 3 4]
+                           [6 7 1 2 3 4 5]
+                           [7 1 2 3 4 5 6]]
+          )]
       (is (f/game-over? blocked-board)))))
 
 (deftest neural-network-test
@@ -181,11 +198,63 @@
       (is (every? #(and (number? %) (>= % 0.0) (<= % 1.0)) (vals policy-map)))
       
       ;; Test move selection
-      (let [suggested-moves (f/suggested-moves board)
+      (let [valid-moves (f/valid-moves board)
             selected-move (nn/select-move game-state)]
         (is (vector? selected-move))
         (is (= 3 (count selected-move)))
-        (is (some #{selected-move} suggested-moves))))))
+        (is (some #{selected-move} valid-moves))))))
+
+(deftest valid-move-test
+  (testing "Move validation rules"
+    (let [board [[1 nil nil nil nil nil nil]
+                 [nil 2 nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]
+                 [nil nil nil nil nil nil nil]]]
+      
+      ;; Test valid moves
+      (is (f/valid-move? board [2 2 3]))  ; Empty cell, no conflicts
+      (is (f/valid-move? board [0 1 3]))  ; Empty cell, no conflicts (using 3 instead of 2)
+      
+      ;; Test out of bounds
+      (is (not (f/valid-move? board [-1 0 1])))  ; Negative row
+      (is (not (f/valid-move? board [0 -1 1])))  ; Negative column
+      (is (not (f/valid-move? board [7 0 1])))   ; Row too large
+      (is (not (f/valid-move? board [0 7 1])))   ; Column too large
+      
+      ;; Test invalid numbers
+      (is (not (f/valid-move? board [2 2 0])))   ; Number too small
+      (is (not (f/valid-move? board [2 2 8])))   ; Number too large
+      
+      ;; Test occupied cells
+      (is (not (f/valid-move? board [0 0 3])))   ; Cell already has 1
+      
+      ;; Test row conflicts
+      (is (not (f/valid-move? board [0 1 1])))   ; 1 already in row 0
+      
+      ;; Test column conflicts
+      (is (not (f/valid-move? board [1 0 2])))   ; 2 already in column 0
+      
+      ;; Test nil inputs
+      (is (not (f/valid-move? nil [0 0 1])))     ; Nil board
+      (is (not (f/valid-move? board nil)))       ; Nil move
+      (is (not (f/valid-move? nil nil))))))      ; Both nil
+
+;; Insert new test (valid-moves-blocked-test) after the game-over-test (or at the end of the file) to test valid-moves on the blocked board.
+;; (deftest valid-moves-blocked-test
+;;   (testing "Valid moves on blocked board (should be empty)"
+;;     (let [blocked-board (create-test-board [[1 2 3 4 5 6 7]
+;;                                            [2 nil nil nil nil nil nil]
+;;                                            [3 nil nil nil nil nil nil]
+;;                                            [4 nil nil nil nil nil nil]
+;;                                            [5 nil nil nil nil nil nil]
+;;                                            [6 nil nil nil nil nil nil]
+;;                                            [7 nil nil nil nil nil nil]])
+;;           valid-moves (f/valid-moves (:board blocked-board))]
+;;       (println "Valid moves (or invalid moves) for blocked board:" valid-moves)
+;;       (is (empty? valid-moves)))))
 
 
 

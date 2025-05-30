@@ -277,8 +277,7 @@
                        (throw (ex-info "Expected map data in predict-pipe" 
                                      {:data-type (type data)})))
           game-state (:metamorph/data (get-in ctx [:metamorph/context :original-data]))
-          moves (f/suggested-moves (:board game-state))
-          move-keys (map f/compress-move moves)  ; Use the same compression as functions.clj
+          moves (f/valid-moves (:board game-state))
           policy-logits (vec (flatten (seq (get predictions :policy))))
           policy-probs (vec (softmax policy-logits))  ; Ensure policy-probs is a vector
           value (get predictions :value)
@@ -286,12 +285,9 @@
           ;; Filter policy to only include valid moves and normalize
           valid-policy (when (and (seq moves) (seq policy-probs))
                         (let [move-probs (map (fn [move]
-                                              (let [compressed (f/compress-move move)
-                                                    idx (+ (* 7 (first move))
-                                                         (* 49 (second move))
-                                                         (dec (nth move 2)))]
-                                                (when (< idx (count policy-probs))
-                                                  (nth policy-probs idx))))
+                                              (let [compressed (f/compress-move move)]
+                                                (when (< compressed (count policy-probs))
+                                                  (nth policy-probs compressed))))
                                             moves)
                               valid-probs (remove nil? move-probs)
                               max-prob (apply max valid-probs)
@@ -372,7 +368,7 @@
   (let [pipeline @trained-model
         result (run-pipeline pipeline game-state :transform)
         policy (:policy result)
-        valid-moves (f/suggested-moves (:board game-state))]
+        valid-moves (f/valid-moves (:board game-state))]
     (when (seq valid-moves)
       (apply max-key #(get policy % 0.0) valid-moves))))
 

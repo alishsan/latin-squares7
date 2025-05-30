@@ -19,7 +19,7 @@
   (initialize-model)  ; Ensure model is initialized
   (let [predictions (nn/run-pipeline @current-model state :transform)
         policy (:policy predictions)
-        valid-moves (f/suggested-moves (:board state))
+        valid-moves (f/valid-moves (:board state))
         move-number (count (filter some? (flatten (:board state))))]
     (println (format "[DEBUG] Move #%d" (inc move-number)))
     (println "[DEBUG] NN policy:" policy)
@@ -38,7 +38,7 @@
 
 (defn get-random-move [game-state]
   "Get a random valid move from the current position"
-  (let [valid-moves (f/suggested-moves (:board game-state))]
+  (let [valid-moves (f/valid-moves (:board game-state))]
     (when (seq valid-moves)
       (rand-nth valid-moves))))
 
@@ -117,7 +117,7 @@
       (cond
         (not (vector? move)) (do (println "Move must be a vector") nil)
         (not= 3 (count move)) (do (println "Move needs 3 numbers") nil)
-        :else (if (f/suggested-move? (:board game-state) move)
+        :else (if (f/valid-move? (:board game-state) move)
                 move
                 (do (println "Invalid move! Check row/column constraints")
                     nil))))
@@ -164,7 +164,7 @@
     (f/print-board (:board @game-state))
     (System/exit 0))
   
-  (println "\nPossible moves:" (take 10 (f/suggested-moves (:board @game-state))))
+  (println "\nPossible moves:" (take 10 (f/valid-moves (:board @game-state))))
   (println "\nOptions:")
   (println "1. Enter move as [row col num]")
   (println "2. Type 'neural' for Neural Network AI move")

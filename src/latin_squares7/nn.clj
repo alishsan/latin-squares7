@@ -24,7 +24,7 @@
 ;; Helper Functions
 (defn get-random-move [game-state]
   "Get a random valid move from the current position"
-  (let [valid-moves (f/suggested-moves (:board game-state))]
+  (let [valid-moves (f/valid-moves (:board game-state))]
     (when (seq valid-moves)
       (rand-nth valid-moves))))
 
@@ -414,7 +414,7 @@
                        (throw (ex-info "Expected map data in predict-pipe" 
                                      {:data-type (type data)})))
           game-state (:metamorph/data (get-in ctx [:metamorph/context :original-data]))
-          moves (f/suggested-moves (:board game-state))
+          moves (f/valid-moves (:board game-state))
           policy-logits (vec (flatten (seq (get predictions :policy))))
           policy-probs (vec (softmax policy-logits))  ; Ensure policy-probs is a vector
           value (get predictions :value)
@@ -584,7 +584,7 @@
         forward-result (forward-pass model features)
         last-activation (last (:activations forward-result))
         prediction (double (first (flatten (seq last-activation))))  ; Extract numeric value from tensor
-        moves (f/suggested-moves (:board game-state))
+        moves (f/valid-moves (:board game-state))
         all-possible-moves (for [row (range 7)
                                col (range 7)
                                val (range 1 8)]
@@ -603,7 +603,7 @@
   (let [pipeline @trained-model
         result (run-pipeline pipeline game-state :transform)
         policy (:policy result)
-        valid-moves (f/suggested-moves (:board game-state))]
+        valid-moves (f/valid-moves (:board game-state))]
     (when (seq valid-moves)
       (apply max-key #(get policy % 0.0) valid-moves))))
 
@@ -653,7 +653,7 @@
   "Get policy map from neural network predictions"
   (let [predictions (predict game-state)
         policy (:policy predictions)
-        moves (f/suggested-moves (:board game-state))
+        moves (f/valid-moves (:board game-state))
         move-probs (zipmap moves (map #(double (get policy % 0.0)) moves))]  ; Ensure all probabilities are doubles
     move-probs))
 

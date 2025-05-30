@@ -33,13 +33,26 @@
   (and (integer? num)
        (<= 1 num 7)))
 
-(defn valid-move? [board [row col num]]
-  (and (<= 0 row 6)
-       (<= 0 col 6)
-       (<= 1 num 7)
-       (nil? (get-in board [row col]))
-       (not-any? #(= num %) (get board row))
-       (not-any? #(= num %) (map #(get % col) board))))
+(defn valid-move? [board move]
+  (if (and board (vector? move) (= 3 (count move)))
+    (let [[row col num] move
+          valid? (and (<= 0 row 6)
+                      (<= 0 col 6)
+                      (<= 1 num 7)
+                      (nil? (get-in board [row col]))
+                      (not-any? #(= num %) (get board row))
+                      (not-any? #(= num %) (map #(get % col) board)))]
+      (when-not valid?
+        (println (format "Invalid move [%d %d %d] because:" row col num))
+        (cond
+          (not (<= 0 row 6)) (println "- Row out of bounds")
+          (not (<= 0 col 6)) (println "- Column out of bounds")
+          (not (<= 1 num 7)) (println "- Number out of range")
+          (some? (get-in board [row col])) (println "- Cell is occupied")
+          (some #(= num %) (get board row)) (println "- Number exists in row")
+          (some #(= num %) (map #(get % col) board)) (println "- Number exists in column")))
+      valid?)
+    (do (println "Invalid move (nil or not a vector of length 3)") false)))
 
 ;; ======================
 ;; Game State Management
@@ -81,17 +94,20 @@
   (let [used (set (filter some? (flatten board)))]
     (remove used (range 1 8))))
 
-(defn suggested-moves [board]
+(defn valid-moves [board]
   (for [row (range 7)
         col (range 7)
-        :when (nil? (get-in board [row col]))
+        :when (nil? (get-in board [row col]))  ; Only consider empty cells
         num (range 1 8)
-        :when (valid-move? board [row col num])]
+        :let [row-numbers (set (filter some? (get board row)))
+              col-numbers (set (filter some? (map #(nth % col) board)))]
+        :when (and (not (contains? row-numbers num))  ; Number not in row
+                  (not (contains? col-numbers num)))]  ; Number not in column
     [row col num]))
 
 (defn get-random-move [game-state]
   "Get a random valid move from the current position"
-  (let [valid-moves (suggested-moves (:board game-state))]
+  (let [valid-moves (valid-moves (:board game-state))]
     (when (seq valid-moves)
       (rand-nth valid-moves))))
 
@@ -99,7 +115,11 @@
   "Check if the game is over (either solved or blocked)"
   (let [board (:board game-state)
         is-full (every? #(every? some? %) board)
-        valid-moves (suggested-moves board)]
+        valid-moves (valid-moves board)]
+    (println "[DEBUG] Game over check:")
+    (println "[DEBUG] Board is full?" is-full)
+    (println "[DEBUG] Valid moves:" valid-moves)
+    (println "[DEBUG] Number of valid moves:" (count valid-moves))
     (or is-full  ; Game is over if board is full
         (empty? valid-moves))))  ; Or if there are no valid moves
 
@@ -107,7 +127,7 @@
   "Check if the game is solved (board is full and all moves are valid)"
   (let [board (:board game-state)
         is-full (every? #(every? some? %) board)
-        valid-moves (suggested-moves board)]
+        valid-moves (valid-moves board)]
     (and is-full  ; Board must be full
          (not (empty? valid-moves)))))  ; And must have valid moves
 
@@ -235,4 +255,4 @@
     (println (map #(or % "_") row))))
 
 ;; (println "Board valid?" (s/valid? ::board (:board (new-game))))
-;; (println "Suggested moves:" (suggested-moves (:board (new-game))))
+;; (println "Valid moves:" (valid-moves (:board (new-game))))
